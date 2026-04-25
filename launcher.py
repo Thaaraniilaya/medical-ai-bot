@@ -1,12 +1,11 @@
 """
-Medical AI Bot Launcher - Clean Production Version
-- Serves the UI
-- Serves LiveKit tokens
-- Bot workers run as separate processes via supervisord
+Medical AI Bot - Single Process Production Server
+FastAPI + LiveKit AgentServer run in same asyncio event loop via lifespan
 """
 
 import os
-import socket
+import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -16,13 +15,121 @@ import uvicorn
 from livekit import api
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
+# ── Register plugins on main thread (required by livekit) ────────────────────
+from livekit.agents import Agent, AgentSession, JobContext, RoomInputOptions, WorkerOptions
+from livekit.agents.worker import AgentServer
+from livekit.plugins import cartesia, deepgram, silero, spatialreal
+from livekit.plugins.openai import LLM
 
-app = FastAPI()
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+load_dotenv(override=True)
 
 BOT_DIR = Path(__file__).parent
 AUDIO_HTML = (BOT_DIR / "audio_ui.html").read_text(encoding="utf-8")
+
+# ── Agent definitions ─────────────────────────────────────────────────────────
+
+AUDIO_PROMPT = """You are Dr. Alex, a warm professional AI medical assistant.
+Keep responses SHORT (under 15 words). Be friendly and helpful."""
+
+VIDEO_PROMPT = """You are Dr. Alex, a warm professional AI medical assistant with a 3D avatar.
+Keep responses EXTREMELY SHORT (under 10 words). Speak naturally."""
+
+
+class AudioAgent(Agent):
+    def __init__(self):
+        super().__init__(instructions=AUDIO_PROMPT)
+
+
+class VideoAgent(Agent):
+    def __init__(self):
+        super().__init__(instructions=VIDEO_PROMPT)
+
+
+async def audio_entrypoint(ctx: JobContext):
+    print(f"[Audio] Room: {ctx.room.name}")
+    await ctx.connect()
+    llm = LLM(api_key=os.getenv("GROQ_API_KEY"),
+               base_url="https://api.groq.com/openai/v1",
+               model="llama-3.1-8b-instant")
+    tts = cartesia.TTS(api_key=os.getenv("CARTESIA_API_KEY"),
+                       voice="694f9389-aac1-45b6-b726-9d9369183238",
+                       sample_rate=16000)
+    stt = deepgram.STT(api_key=os.getenv("DEEPGRAM_API_KEY"))
+    vad = silero.VAD.load(min_silence_duration=0.5)
+    session = AgentSession(llm=llm, tts=tts, stt=stt, vad=vad)
+    await session.start(agent=AudioAgent(), room=ctx.room,
+                        room_input_options=RoomInputOptions())
+    await session.generate_reply(
+        instructions="Greet the user briefly as Dr. Alex.")
+    print("[Audio] Live!")
+
+
+async def video_entrypoint(ctx: JobContext):
+    print(f"[Video] Room: {ctx.room.name}")
+    await ctx.connect()
+    llm = LLM(api_key=os.getenv("GROQ_API_KEY"),
+               base_url="https://api.groq.com/openai/v1",
+               model="llama-3.1-8b-instant")
+    tts = cartesia.TTS(api_key=os.getenv("CARTESIA_API_KEY"),
+                       voice="694f9389-aac1-45b6-b726-9d9369183238",
+                       sample_rate=24000)
+    stt = deepgram.STT(api_key=os.getenv("DEEPGRAM_API_KEY"))
+    vad = silero.VAD.load(min_silence_duration=0.5)
+    avatar = spatialreal.AvatarSession(
+        api_key=os.getenv("SPATIALREAL_API_KEY"),
+        app_id=os.getenv("SPATIALREAL_APP_ID"),
+        avatar_id=os.getenv("SPATIALREAL_AVATAR_ID"),
+        sample_rate=24000,
+    )
+    session = AgentSession(llm=llm, tts=tts, stt=stt, vad=vad)
+    await avatar.start(session, room=ctx.room)
+    await session.start(agent=VideoAgent(), room=ctx.room,
+                        room_input_options=RoomInputOptions())
+    await session.generate_reply(
+        instructions="Greet the user briefly as Dr. Alex.")
+    print("[Video] Live!")
+
+
+# ── Lifespan: start both bot workers when server starts ──────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Build AgentServers
+    audio_server = AgentServer.from_server_options(WorkerOptions(
+        entrypoint_fnc=audio_entrypoint,
+        api_key=os.getenv("LIVEKIT_API_KEY"),
+        api_secret=os.getenv("LIVEKIT_API_SECRET"),
+        ws_url=os.getenv("LIVEKIT_URL"),
+        port=8081,
+    ))
+    video_server = AgentServer.from_server_options(WorkerOptions(
+        entrypoint_fnc=video_entrypoint,
+        api_key=os.getenv("LIVEKIT_API_KEY"),
+        api_secret=os.getenv("LIVEKIT_API_SECRET"),
+        ws_url=os.getenv("LIVEKIT_URL"),
+        port=8082,
+    ))
+
+    # Start both as background tasks in the same event loop
+    audio_task = asyncio.create_task(audio_server.run())
+    video_task = asyncio.create_task(video_server.run())
+    print("✅ Audio + Video bot workers started")
+
+    yield  # Server is running
+
+    # Shutdown
+    audio_task.cancel()
+    video_task.cancel()
+    try:
+        await asyncio.gather(audio_task, video_task, return_exceptions=True)
+    except Exception:
+        pass
+
+
+# ── FastAPI app ───────────────────────────────────────────────────────────────
+
+app = FastAPI(lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -74,8 +181,10 @@ async def get_token(request: Request):
 
 @app.get("/status")
 def bot_status():
-    return JSONResponse({"running": True, "mode": "audio"})
+    return JSONResponse({"running": True, "mode": "both"})
 
+
+# ── HTML pages ────────────────────────────────────────────────────────────────
 
 LAUNCHER_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -94,7 +203,8 @@ LAUNCHER_HTML = """<!DOCTYPE html>
     -webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:.4rem;text-align:center}
   .subtitle{color:#64748b;font-size:1rem;margin-bottom:3rem;text-align:center}
   .cards{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;width:100%;max-width:700px;margin-bottom:2rem}
-  .card{background:#0d1629;border:1.5px solid rgba(99,179,237,.12);border-radius:20px;padding:2rem;text-align:center;transition:all .3s;text-decoration:none;display:block;color:inherit}
+  .card{background:#0d1629;border:1.5px solid rgba(99,179,237,.12);border-radius:20px;
+    padding:2rem;text-align:center;transition:all .3s;text-decoration:none;display:block;color:inherit}
   .card:hover{transform:translateY(-4px)}
   .card.audio:hover{border-color:rgba(59,130,246,.5);box-shadow:0 20px 60px rgba(59,130,246,.15)}
   .card.video:hover{border-color:rgba(139,92,246,.5);box-shadow:0 20px 60px rgba(139,92,246,.15)}
@@ -106,13 +216,15 @@ LAUNCHER_HTML = """<!DOCTYPE html>
   .tag-blue{background:rgba(59,130,246,.15);color:#60a5fa}
   .tag-purple{background:rgba(139,92,246,.15);color:#a78bfa}
   .tag-teal{background:rgba(20,184,166,.15);color:#34d399}
-  .btn{display:block;width:100%;padding:.85rem 1.5rem;border:none;border-radius:12px;font-family:'Inter',sans-serif;
-    font-size:.95rem;font-weight:600;cursor:pointer;transition:all .2s;margin-top:1rem;text-align:center;text-decoration:none}
+  .btn{display:block;width:100%;padding:.85rem 1.5rem;border:none;border-radius:12px;
+    font-family:'Inter',sans-serif;font-size:.95rem;font-weight:600;cursor:pointer;
+    transition:all .2s;margin-top:1rem;text-align:center;text-decoration:none}
   .btn-audio{background:linear-gradient(135deg,#2563eb,#3b82f6);color:white}
   .btn-video{background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:white}
   .btn:hover{transform:scale(1.03);filter:brightness(1.1)}
   .live-badge{display:inline-flex;align-items:center;gap:.4rem;background:rgba(34,197,94,.15);
-    color:#4ade80;border:1px solid rgba(34,197,94,.3);padding:.3rem .8rem;border-radius:99px;font-size:.8rem;font-weight:600;margin-bottom:1rem}
+    color:#4ade80;border:1px solid rgba(34,197,94,.3);padding:.3rem .8rem;
+    border-radius:99px;font-size:.8rem;font-weight:600;margin-bottom:1rem}
   .live-dot{width:8px;height:8px;border-radius:50%;background:#22c55e;animation:pulse 2s infinite}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 </style>
@@ -120,7 +232,6 @@ LAUNCHER_HTML = """<!DOCTYPE html>
 <body>
 <h1>🩺 Medical AI Bot</h1>
 <p class="subtitle">Dr. Alex is live — choose your mode</p>
-
 <div class="cards">
   <a class="card audio" href="/audio">
     <span class="card-icon">🎙️</span>
@@ -134,7 +245,6 @@ LAUNCHER_HTML = """<!DOCTYPE html>
     </div>
     <span class="btn btn-audio">Open Audio Bot →</span>
   </a>
-
   <a class="card video" href="/video">
     <span class="card-icon">🎬</span>
     <div class="live-badge"><span class="live-dot"></span> Live</div>
@@ -160,243 +270,141 @@ VIDEO_HTML = """<!DOCTYPE html>
 <title>Dr. Alex - Video Avatar</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:'Segoe UI',sans-serif;background:#0f172a;color:#f1f5f9;min-height:100vh;
-    display:flex;flex-direction:column;align-items:center;justify-content:center;padding:1rem;overflow:hidden}
-
-  /* Avatar video fills screen */
-  #avatarVideo{
-    position:fixed;top:0;left:0;width:100%;height:100%;
-    object-fit:cover;z-index:0;background:#0f172a;display:none;
-  }
-
-  /* Overlay UI on top of avatar */
-  .overlay{
-    position:relative;z-index:10;width:100%;max-width:480px;
-    display:flex;flex-direction:column;align-items:center;gap:1rem;
-  }
-
+  body{font-family:'Segoe UI',sans-serif;background:#0f172a;color:#f1f5f9;
+    min-height:100vh;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;padding:1rem;overflow:hidden}
+  #avatarVideo{position:fixed;top:0;left:0;width:100%;height:100%;
+    object-fit:cover;z-index:0;background:#0f172a;display:none}
+  .overlay{position:relative;z-index:10;width:100%;max-width:480px;
+    display:flex;flex-direction:column;align-items:center;gap:1rem}
   h1{color:#a78bfa;font-size:1.8rem;font-weight:800;text-shadow:0 2px 20px rgba(0,0,0,.8)}
-
-  /* Placeholder when no avatar yet */
-  .avatar-placeholder{
-    width:160px;height:160px;border-radius:50%;
+  .avatar-placeholder{width:160px;height:160px;border-radius:50%;
     background:linear-gradient(135deg,#7c3aed,#a78bfa);
-    display:flex;align-items:center;justify-content:center;
-    font-size:4rem;border:3px solid rgba(167,139,250,.4);
-    box-shadow:0 0 40px rgba(139,92,246,.3);
-    transition:all .3s;
-  }
-  .avatar-placeholder.speaking{
-    box-shadow:0 0 60px rgba(139,92,246,.8);
-    border-color:#a78bfa;
-    animation:avatarPulse 1s ease-in-out infinite;
-  }
+    display:flex;align-items:center;justify-content:center;font-size:4rem;
+    border:3px solid rgba(167,139,250,.4);box-shadow:0 0 40px rgba(139,92,246,.3);transition:all .3s}
+  .avatar-placeholder.speaking{box-shadow:0 0 60px rgba(139,92,246,.8);border-color:#a78bfa;
+    animation:avatarPulse 1s ease-in-out infinite}
   @keyframes avatarPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}
-
-  .chatbox{
-    width:100%;max-height:180px;overflow-y:auto;
+  .chatbox{width:100%;max-height:180px;overflow-y:auto;
     background:rgba(15,23,42,.85);backdrop-filter:blur(10px);
     border:1px solid rgba(51,65,85,.8);border-radius:12px;
-    padding:.8rem;display:flex;flex-direction:column;gap:.5rem;
-  }
+    padding:.8rem;display:flex;flex-direction:column;gap:.5rem}
   .msg{padding:.5rem .9rem;border-radius:10px;max-width:85%;font-size:.85rem;line-height:1.4}
   .bot-msg{background:rgba(51,65,85,.9);align-self:flex-start}
   .user-msg{background:rgba(124,58,237,.8);align-self:flex-end}
-
-  .status{
-    color:#94a3b8;font-size:.85rem;text-align:center;
-    background:rgba(15,23,42,.7);padding:.4rem 1rem;border-radius:99px;
-    backdrop-filter:blur(10px);
-  }
-  .status.listening{color:#22c55e}
-  .status.speaking{color:#a78bfa}
-
-  .btn{
-    width:100%;padding:.9rem;border:none;border-radius:12px;
-    font-size:1rem;font-weight:700;cursor:pointer;transition:.2s;
-  }
+  .status{color:#94a3b8;font-size:.85rem;text-align:center;
+    background:rgba(15,23,42,.7);padding:.4rem 1rem;border-radius:99px;backdrop-filter:blur(10px)}
+  .status.listening{color:#22c55e}.status.speaking{color:#a78bfa}
+  .btn{width:100%;padding:.9rem;border:none;border-radius:12px;font-size:1rem;font-weight:700;cursor:pointer;transition:.2s}
   .btn-start{background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:white}
   .btn-start:hover{filter:brightness(1.1)}
-  .btn-stop{background:rgba(239,68,68,.8);color:white;display:none;backdrop-filter:blur(10px)}
-  .btn-stop:hover{background:rgba(239,68,68,1)}
+  .btn-stop{background:rgba(239,68,68,.8);color:white;display:none}
   .btn:disabled{opacity:.5;cursor:not-allowed}
-
-  .back{color:#475569;font-size:.8rem;text-decoration:none;margin-top:.5rem}
-  .back:hover{color:#64748b}
-
   .unmute{display:none;background:#f59e0b;color:#000;padding:.6rem 1rem;
     border-radius:10px;text-align:center;font-weight:700;cursor:pointer;font-size:.85rem;width:100%}
+  .back{color:#475569;font-size:.8rem;text-decoration:none;margin-top:.5rem}
+  .back:hover{color:#64748b}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js"></script>
 </head>
 <body>
-
-<!-- Full-screen avatar video (shown when avatar connects) -->
-<video id="avatarVideo" autoplay playsinline muted></video>
-
+<video id="avatarVideo" autoplay playsinline></video>
 <div class="overlay">
   <h1>🎬 Dr. Alex</h1>
-
-  <!-- Placeholder avatar (shown before video loads) -->
   <div class="avatar-placeholder" id="avatarPlaceholder">🩺</div>
-
   <div class="chatbox" id="chatbox">
     <div class="msg bot-msg">Hello! I'm Dr. Alex. Click Start to begin.</div>
   </div>
-
   <div class="status" id="status">Ready</div>
   <div class="unmute" id="unmute" onclick="unmuteAll()">🔇 Click to enable audio</div>
-
   <button class="btn btn-start" id="startBtn" onclick="startConversation()">🎙️ Start Conversation</button>
   <button class="btn btn-stop"  id="stopBtn"  onclick="stopConversation()">⏹ Disconnect</button>
   <a class="back" href="/">← Back to launcher</a>
 </div>
-
 <script>
-let room=null, audioElements=[], audioCtx=null;
-const statusEl   = document.getElementById('status');
-const startBtn   = document.getElementById('startBtn');
-const stopBtn    = document.getElementById('stopBtn');
-const placeholder= document.getElementById('avatarPlaceholder');
-const avatarVideo= document.getElementById('avatarVideo');
-const chatbox    = document.getElementById('chatbox');
-const unmuteEl   = document.getElementById('unmute');
+let room=null,audioElements=[],audioCtx=null;
+const statusEl=document.getElementById('status');
+const startBtn=document.getElementById('startBtn');
+const stopBtn=document.getElementById('stopBtn');
+const placeholder=document.getElementById('avatarPlaceholder');
+const avatarVideo=document.getElementById('avatarVideo');
+const chatbox=document.getElementById('chatbox');
+const unmuteEl=document.getElementById('unmute');
 
-function setStatus(txt, cls){
-  statusEl.textContent=txt;
-  statusEl.className='status '+(cls||'');
-}
-
+function setStatus(txt,cls){statusEl.textContent=txt;statusEl.className='status '+(cls||'');}
 function getOrUpdateMsg(id,text,isUser){
   let el=document.getElementById('msg_'+id);
-  if(!el){
-    el=document.createElement('div');
-    el.id='msg_'+id;
-    el.className='msg '+(isUser?'user-msg':'bot-msg');
-    chatbox.appendChild(el);
-  }
-  el.textContent=text;
-  chatbox.scrollTop=chatbox.scrollHeight;
+  if(!el){el=document.createElement('div');el.id='msg_'+id;
+    el.className='msg '+(isUser?'user-msg':'bot-msg');chatbox.appendChild(el);}
+  el.textContent=text;chatbox.scrollTop=chatbox.scrollHeight;
 }
-
 function unmuteAll(){
-  if(audioCtx&&audioCtx.state==='suspended') audioCtx.resume();
+  if(audioCtx&&audioCtx.state==='suspended')audioCtx.resume();
   audioElements.forEach(el=>{el.muted=false;el.volume=1.0;el.play().catch(()=>{});});
   unmuteEl.style.display='none';
 }
-
 async function startConversation(){
-  startBtn.disabled=true;
-  setStatus('Connecting...');
+  startBtn.disabled=true;setStatus('Connecting...');
   try{
     audioCtx=new(window.AudioContext||window.webkitAudioContext)();
-
     const roomName='video-room-'+Math.random().toString(36).substring(2,9);
-    const res=await fetch('/token',{
-      method:'POST',
+    const res=await fetch('/token',{method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({room:roomName, mode:'video', participant_name:'User'})
-    });
+      body:JSON.stringify({room:roomName,mode:'video',participant_name:'User'})});
     const data=await res.json();
-    if(!data.token||!data.url) throw new Error('Token failed: '+JSON.stringify(data));
-
-    room=new LivekitClient.Room({adaptiveStream:true, dynacast:true});
-
-    // ── Handle incoming tracks from bot ──────────────────────────────
+    if(!data.token||!data.url)throw new Error('Token failed: '+JSON.stringify(data));
+    room=new LivekitClient.Room({adaptiveStream:true,dynacast:true});
     room.on(LivekitClient.RoomEvent.TrackSubscribed,(track,pub,participant)=>{
-      console.log('Track from',participant.identity,'kind=',track.kind);
-
+      console.log('Track:',track.kind,'from',participant.identity);
       if(track.kind===LivekitClient.Track.Kind.Audio){
         const el=track.attach();
-        el.autoplay=true; el.muted=false; el.volume=1.0;
-        document.body.appendChild(el);
-        audioElements.push(el);
-        el.play().then(()=>{
-          console.log('Audio playing!');
-        }).catch(err=>{
-          console.warn('Autoplay blocked:',err);
-          unmuteEl.style.display='block';
-        });
+        el.autoplay=true;el.muted=false;el.volume=1.0;
+        document.body.appendChild(el);audioElements.push(el);
+        el.play().catch(()=>{unmuteEl.style.display='block';});
       }
-
       if(track.kind===LivekitClient.Track.Kind.Video){
-        // SpatialReal avatar video track
         track.attach(avatarVideo);
         avatarVideo.style.display='block';
         placeholder.style.display='none';
-        console.log('Avatar video attached!');
       }
     });
-
     room.on(LivekitClient.RoomEvent.TrackUnsubscribed,(track)=>{
       track.detach();
       if(track.kind===LivekitClient.Track.Kind.Video){
-        avatarVideo.style.display='none';
-        placeholder.style.display='flex';
-      }
+        avatarVideo.style.display='none';placeholder.style.display='flex';}
     });
-
-    // ── Speaking indicators ───────────────────────────────────────────
     room.on(LivekitClient.RoomEvent.ActiveSpeakersChanged,(speakers)=>{
       const agentSpeaking=speakers.some(s=>s.identity.startsWith('agent'));
-      const userSpeaking =speakers.some(s=>s.identity==='User');
-      if(agentSpeaking){
-        placeholder.classList.add('speaking');
-        setStatus('🔊 Dr. Alex is speaking...','speaking');
-      } else if(userSpeaking){
-        placeholder.classList.remove('speaking');
-        setStatus('🎤 Listening...','listening');
-      } else {
-        placeholder.classList.remove('speaking');
-        setStatus('💬 Speak to Dr. Alex...','');
-      }
+      const userSpeaking=speakers.some(s=>s.identity==='User');
+      if(agentSpeaking){placeholder.classList.add('speaking');setStatus('🔊 Dr. Alex is speaking...','speaking');}
+      else if(userSpeaking){placeholder.classList.remove('speaking');setStatus('🎤 Listening...','listening');}
+      else{placeholder.classList.remove('speaking');setStatus('💬 Speak to Dr. Alex...');}
     });
-
-    // ── Transcriptions ────────────────────────────────────────────────
     room.on(LivekitClient.RoomEvent.TranscriptionReceived,(segments,participant)=>{
       const isAgent=participant&&participant.identity.startsWith('agent');
-      for(const seg of segments) getOrUpdateMsg(seg.id,seg.text,!isAgent);
+      for(const seg of segments)getOrUpdateMsg(seg.id,seg.text,!isAgent);
     });
-
     room.on(LivekitClient.RoomEvent.ParticipantConnected,(p)=>{
-      console.log('Participant connected:',p.identity);
-      if(p.identity.startsWith('agent')) setStatus('🤖 Dr. Alex joined — speak now!','listening');
+      if(p.identity.startsWith('agent'))setStatus('🤖 Dr. Alex joined!','listening');
     });
-
-    room.on(LivekitClient.RoomEvent.Disconnected,()=>{
-      setStatus('Disconnected','');
-      resetUI();
-    });
-
-    // ── Connect & publish mic ─────────────────────────────────────────
-    await room.connect(data.url, data.token);
+    room.on(LivekitClient.RoomEvent.Disconnected,()=>{setStatus('Disconnected');resetUI();});
+    await room.connect(data.url,data.token);
     await room.localParticipant.setMicrophoneEnabled(true);
     setStatus('⏳ Waiting for Dr. Alex...');
-    startBtn.style.display='none';
-    stopBtn.style.display='block';
-
-  }catch(e){
-    console.error(e);
-    setStatus('❌ '+e.message,'');
-    startBtn.disabled=false;
-  }
+    startBtn.style.display='none';stopBtn.style.display='block';
+  }catch(e){console.error(e);setStatus('❌ '+e.message);startBtn.disabled=false;}
 }
-
 async function stopConversation(){
   if(room){await room.disconnect();room=null;}
-  audioElements.forEach(el=>{el.pause();el.remove();}); audioElements=[];
+  audioElements.forEach(el=>{el.pause();el.remove();});audioElements=[];
   if(audioCtx){audioCtx.close();audioCtx=null;}
   resetUI();
 }
-
 function resetUI(){
-  startBtn.style.display='block'; startBtn.disabled=false;
-  stopBtn.style.display='none';
-  avatarVideo.style.display='none';
-  placeholder.style.display='flex';
-  placeholder.classList.remove('speaking');
-  unmuteEl.style.display='none';
-  setStatus('Ready');
+  startBtn.style.display='block';startBtn.disabled=false;
+  stopBtn.style.display='none';avatarVideo.style.display='none';
+  placeholder.style.display='flex';placeholder.classList.remove('speaking');
+  unmuteEl.style.display='none';setStatus('Ready');
 }
 </script>
 </body>
@@ -405,5 +413,5 @@ function resetUI(){
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
-    print(f"Starting Medical AI Bot Launcher on port {port}")
+    print(f"Starting Medical AI Bot on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
