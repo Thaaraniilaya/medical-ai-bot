@@ -89,7 +89,6 @@ async def unified_entrypoint(ctx: JobContext):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Single AgentServer handles both audio and video rooms
     server = AgentServer.from_server_options(WorkerOptions(
         entrypoint_fnc=unified_entrypoint,
         api_key=os.getenv("LIVEKIT_API_KEY"),
@@ -99,10 +98,15 @@ async def lifespan(app: FastAPI):
         num_idle_processes=0,
     ))
     task = asyncio.create_task(server.run())
+    # Swallow any task exceptions so they don't crash the lifespan
+    task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
     print("✅ Bot worker started (audio + video unified)")
-    yield
+
+    yield  # ← server runs here
+
+    # Shutdown: cancel task, ignore CancelledError
     task.cancel()
-    await asyncio.sleep(0.5)  # Give it a moment to clean up
+    await asyncio.sleep(0.5)
 
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
