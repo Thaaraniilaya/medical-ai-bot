@@ -161,108 +161,223 @@ VIDEO_HTML = """<!DOCTYPE html>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:'Segoe UI',sans-serif;background:#0f172a;color:#f1f5f9;min-height:100vh;
-    display:flex;flex-direction:column;align-items:center;justify-content:center;padding:2rem}
-  h1{color:#a78bfa;font-size:2rem;margin-bottom:.3rem}
-  .subtitle{color:#64748b;margin-bottom:2rem;font-size:.95rem}
-  .card{background:#1e293b;border-radius:20px;padding:2rem;width:100%;max-width:560px;text-align:center}
-  .avatar{width:120px;height:120px;border-radius:50%;background:linear-gradient(135deg,#7c3aed,#a78bfa);
-    display:flex;align-items:center;justify-content:center;font-size:3rem;margin:0 auto 1.5rem}
-  .status{color:#94a3b8;font-size:.9rem;margin-bottom:1.5rem;min-height:1.2rem}
-  .btn{width:100%;padding:1rem;border:none;border-radius:12px;font-size:1rem;font-weight:700;
-    cursor:pointer;transition:.2s;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:white}
-  .btn:hover{filter:brightness(1.1)}
-  .btn.stop{background:#ef4444;display:none}
-  .chatbox{height:200px;overflow-y:auto;background:#0f172a;border:1px solid #334155;
-    border-radius:12px;padding:1rem;margin-bottom:1.5rem;display:flex;flex-direction:column;gap:.6rem;text-align:left}
-  .msg{padding:.6rem 1rem;border-radius:10px;max-width:85%;font-size:.875rem}
-  .bot-msg{background:#334155;align-self:flex-start}
-  .user-msg{background:#7c3aed;align-self:flex-end}
-  .back{color:#64748b;font-size:.85rem;margin-top:1rem;text-decoration:none}
-  .back:hover{color:#94a3b8}
+    display:flex;flex-direction:column;align-items:center;justify-content:center;padding:1rem;overflow:hidden}
+
+  /* Avatar video fills screen */
+  #avatarVideo{
+    position:fixed;top:0;left:0;width:100%;height:100%;
+    object-fit:cover;z-index:0;background:#0f172a;display:none;
+  }
+
+  /* Overlay UI on top of avatar */
+  .overlay{
+    position:relative;z-index:10;width:100%;max-width:480px;
+    display:flex;flex-direction:column;align-items:center;gap:1rem;
+  }
+
+  h1{color:#a78bfa;font-size:1.8rem;font-weight:800;text-shadow:0 2px 20px rgba(0,0,0,.8)}
+
+  /* Placeholder when no avatar yet */
+  .avatar-placeholder{
+    width:160px;height:160px;border-radius:50%;
+    background:linear-gradient(135deg,#7c3aed,#a78bfa);
+    display:flex;align-items:center;justify-content:center;
+    font-size:4rem;border:3px solid rgba(167,139,250,.4);
+    box-shadow:0 0 40px rgba(139,92,246,.3);
+    transition:all .3s;
+  }
+  .avatar-placeholder.speaking{
+    box-shadow:0 0 60px rgba(139,92,246,.8);
+    border-color:#a78bfa;
+    animation:avatarPulse 1s ease-in-out infinite;
+  }
+  @keyframes avatarPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}
+
+  .chatbox{
+    width:100%;max-height:180px;overflow-y:auto;
+    background:rgba(15,23,42,.85);backdrop-filter:blur(10px);
+    border:1px solid rgba(51,65,85,.8);border-radius:12px;
+    padding:.8rem;display:flex;flex-direction:column;gap:.5rem;
+  }
+  .msg{padding:.5rem .9rem;border-radius:10px;max-width:85%;font-size:.85rem;line-height:1.4}
+  .bot-msg{background:rgba(51,65,85,.9);align-self:flex-start}
+  .user-msg{background:rgba(124,58,237,.8);align-self:flex-end}
+
+  .status{
+    color:#94a3b8;font-size:.85rem;text-align:center;
+    background:rgba(15,23,42,.7);padding:.4rem 1rem;border-radius:99px;
+    backdrop-filter:blur(10px);
+  }
+  .status.listening{color:#22c55e}
+  .status.speaking{color:#a78bfa}
+
+  .btn{
+    width:100%;padding:.9rem;border:none;border-radius:12px;
+    font-size:1rem;font-weight:700;cursor:pointer;transition:.2s;
+  }
+  .btn-start{background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:white}
+  .btn-start:hover{filter:brightness(1.1)}
+  .btn-stop{background:rgba(239,68,68,.8);color:white;display:none;backdrop-filter:blur(10px)}
+  .btn-stop:hover{background:rgba(239,68,68,1)}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+
+  .back{color:#475569;font-size:.8rem;text-decoration:none;margin-top:.5rem}
+  .back:hover{color:#64748b}
+
+  .unmute{display:none;background:#f59e0b;color:#000;padding:.6rem 1rem;
+    border-radius:10px;text-align:center;font-weight:700;cursor:pointer;font-size:.85rem;width:100%}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js"></script>
 </head>
 <body>
-<h1>🎬 Dr. Alex</h1>
-<p class="subtitle">3D Avatar Medical Assistant</p>
-<div class="card">
-  <div class="avatar" id="avatar">🩺</div>
+
+<!-- Full-screen avatar video (shown when avatar connects) -->
+<video id="avatarVideo" autoplay playsinline muted></video>
+
+<div class="overlay">
+  <h1>🎬 Dr. Alex</h1>
+
+  <!-- Placeholder avatar (shown before video loads) -->
+  <div class="avatar-placeholder" id="avatarPlaceholder">🩺</div>
+
   <div class="chatbox" id="chatbox">
     <div class="msg bot-msg">Hello! I'm Dr. Alex. Click Start to begin.</div>
   </div>
+
   <div class="status" id="status">Ready</div>
-  <button class="btn" id="startBtn" onclick="startConversation()">🎙️ Start Conversation</button>
-  <button class="btn stop" id="stopBtn" onclick="stopConversation()">⏹ Disconnect</button>
+  <div class="unmute" id="unmute" onclick="unmuteAll()">🔇 Click to enable audio</div>
+
+  <button class="btn btn-start" id="startBtn" onclick="startConversation()">🎙️ Start Conversation</button>
+  <button class="btn btn-stop"  id="stopBtn"  onclick="stopConversation()">⏹ Disconnect</button>
+  <a class="back" href="/">← Back to launcher</a>
 </div>
-<a class="back" href="/">← Back to launcher</a>
 
 <script>
 let room=null, audioElements=[], audioCtx=null;
-const statusEl=document.getElementById('status');
-const startBtn=document.getElementById('startBtn');
-const stopBtn=document.getElementById('stopBtn');
-const avatar=document.getElementById('avatar');
-const chatbox=document.getElementById('chatbox');
+const statusEl   = document.getElementById('status');
+const startBtn   = document.getElementById('startBtn');
+const stopBtn    = document.getElementById('stopBtn');
+const placeholder= document.getElementById('avatarPlaceholder');
+const avatarVideo= document.getElementById('avatarVideo');
+const chatbox    = document.getElementById('chatbox');
+const unmuteEl   = document.getElementById('unmute');
 
-function addMsg(text,isUser){
-  const el=document.createElement('div');
-  el.className='msg '+(isUser?'user-msg':'bot-msg');
-  el.textContent=text; chatbox.appendChild(el);
-  chatbox.scrollTop=chatbox.scrollHeight;
+function setStatus(txt, cls){
+  statusEl.textContent=txt;
+  statusEl.className='status '+(cls||'');
 }
+
 function getOrUpdateMsg(id,text,isUser){
   let el=document.getElementById('msg_'+id);
-  if(!el){el=document.createElement('div');el.id='msg_'+id;el.className='msg '+(isUser?'user-msg':'bot-msg');chatbox.appendChild(el);}
-  el.textContent=text; chatbox.scrollTop=chatbox.scrollHeight;
+  if(!el){
+    el=document.createElement('div');
+    el.id='msg_'+id;
+    el.className='msg '+(isUser?'user-msg':'bot-msg');
+    chatbox.appendChild(el);
+  }
+  el.textContent=text;
+  chatbox.scrollTop=chatbox.scrollHeight;
+}
+
+function unmuteAll(){
+  if(audioCtx&&audioCtx.state==='suspended') audioCtx.resume();
+  audioElements.forEach(el=>{el.muted=false;el.volume=1.0;el.play().catch(()=>{});});
+  unmuteEl.style.display='none';
 }
 
 async function startConversation(){
-  startBtn.disabled=true; statusEl.textContent='Connecting...';
+  startBtn.disabled=true;
+  setStatus('Connecting...');
   try{
     audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+
     const roomName='video-room-'+Math.random().toString(36).substring(2,9);
-    const res=await fetch('/token',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({room:roomName,mode:'video',participant_name:'User'})});
+    const res=await fetch('/token',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({room:roomName, mode:'video', participant_name:'User'})
+    });
     const data=await res.json();
-    if(!data.token||!data.url) throw new Error('Token failed');
+    if(!data.token||!data.url) throw new Error('Token failed: '+JSON.stringify(data));
 
-    room=new LivekitClient.Room({adaptiveStream:true,dynacast:true});
+    room=new LivekitClient.Room({adaptiveStream:true, dynacast:true});
 
+    // ── Handle incoming tracks from bot ──────────────────────────────
     room.on(LivekitClient.RoomEvent.TrackSubscribed,(track,pub,participant)=>{
+      console.log('Track from',participant.identity,'kind=',track.kind);
+
       if(track.kind===LivekitClient.Track.Kind.Audio){
         const el=track.attach();
         el.autoplay=true; el.muted=false; el.volume=1.0;
-        document.body.appendChild(el); audioElements.push(el);
-        el.play().catch(()=>{});
-      }
-      if(track.kind===LivekitClient.Track.Kind.Video){
-        const el=track.attach();
-        el.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;object-fit:cover;z-index:-1;opacity:.3';
         document.body.appendChild(el);
+        audioElements.push(el);
+        el.play().then(()=>{
+          console.log('Audio playing!');
+        }).catch(err=>{
+          console.warn('Autoplay blocked:',err);
+          unmuteEl.style.display='block';
+        });
+      }
+
+      if(track.kind===LivekitClient.Track.Kind.Video){
+        // SpatialReal avatar video track
+        track.attach(avatarVideo);
+        avatarVideo.style.display='block';
+        placeholder.style.display='none';
+        console.log('Avatar video attached!');
       }
     });
 
+    room.on(LivekitClient.RoomEvent.TrackUnsubscribed,(track)=>{
+      track.detach();
+      if(track.kind===LivekitClient.Track.Kind.Video){
+        avatarVideo.style.display='none';
+        placeholder.style.display='flex';
+      }
+    });
+
+    // ── Speaking indicators ───────────────────────────────────────────
     room.on(LivekitClient.RoomEvent.ActiveSpeakersChanged,(speakers)=>{
       const agentSpeaking=speakers.some(s=>s.identity.startsWith('agent'));
-      avatar.style.boxShadow=agentSpeaking?'0 0 30px #a78bfa':'none';
-      statusEl.textContent=agentSpeaking?'🔊 Dr. Alex is speaking...':'💬 Speak to Dr. Alex...';
+      const userSpeaking =speakers.some(s=>s.identity==='User');
+      if(agentSpeaking){
+        placeholder.classList.add('speaking');
+        setStatus('🔊 Dr. Alex is speaking...','speaking');
+      } else if(userSpeaking){
+        placeholder.classList.remove('speaking');
+        setStatus('🎤 Listening...','listening');
+      } else {
+        placeholder.classList.remove('speaking');
+        setStatus('💬 Speak to Dr. Alex...','');
+      }
     });
 
+    // ── Transcriptions ────────────────────────────────────────────────
     room.on(LivekitClient.RoomEvent.TranscriptionReceived,(segments,participant)=>{
       const isAgent=participant&&participant.identity.startsWith('agent');
       for(const seg of segments) getOrUpdateMsg(seg.id,seg.text,!isAgent);
     });
 
     room.on(LivekitClient.RoomEvent.ParticipantConnected,(p)=>{
-      if(p.identity.startsWith('agent')) statusEl.textContent='🤖 Dr. Alex joined!';
+      console.log('Participant connected:',p.identity);
+      if(p.identity.startsWith('agent')) setStatus('🤖 Dr. Alex joined — speak now!','listening');
     });
 
-    await room.connect(data.url,data.token);
+    room.on(LivekitClient.RoomEvent.Disconnected,()=>{
+      setStatus('Disconnected','');
+      resetUI();
+    });
+
+    // ── Connect & publish mic ─────────────────────────────────────────
+    await room.connect(data.url, data.token);
     await room.localParticipant.setMicrophoneEnabled(true);
-    statusEl.textContent='⏳ Waiting for Dr. Alex...';
-    startBtn.style.display='none'; stopBtn.style.display='block';
+    setStatus('⏳ Waiting for Dr. Alex...');
+    startBtn.style.display='none';
+    stopBtn.style.display='block';
+
   }catch(e){
-    statusEl.textContent='Error: '+e.message;
+    console.error(e);
+    setStatus('❌ '+e.message,'');
     startBtn.disabled=false;
   }
 }
@@ -271,9 +386,17 @@ async function stopConversation(){
   if(room){await room.disconnect();room=null;}
   audioElements.forEach(el=>{el.pause();el.remove();}); audioElements=[];
   if(audioCtx){audioCtx.close();audioCtx=null;}
+  resetUI();
+}
+
+function resetUI(){
   startBtn.style.display='block'; startBtn.disabled=false;
-  stopBtn.style.display='none'; statusEl.textContent='Disconnected';
-  avatar.style.boxShadow='none';
+  stopBtn.style.display='none';
+  avatarVideo.style.display='none';
+  placeholder.style.display='flex';
+  placeholder.classList.remove('speaking');
+  unmuteEl.style.display='none';
+  setStatus('Ready');
 }
 </script>
 </body>
