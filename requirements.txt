@@ -1,0 +1,10 @@
+fastapi==0.115.5
+uvicorn==0.32.1
+python-dotenv==1.0.1
+livekit==1.0.4
+livekit-agents==1.5.6
+livekit-plugins-cartesia==1.5.6
+livekit-plugins-deepgram==1.5.6
+livekit-plugins-silero==1.5.6
+livekit-plugins-openai==1.5.6
+livekit-plugins-spatialreal==1.4.5

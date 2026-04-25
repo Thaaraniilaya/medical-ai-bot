@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: medical-ai-bot
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    envVars:
+      - key: DEEPGRAM_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: CARTESIA_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: LIVEKIT_URL
+        sync: false
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false
+      - key: SPATIALREAL_API_KEY
+        sync: false
+      - key: SPATIALREAL_AVATAR_ID
+        sync: false
+      - key: SPATIALREAL_APP_ID
+        sync: false

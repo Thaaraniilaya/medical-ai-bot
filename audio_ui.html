@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dr. Alex - Voice Assistant</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #0f172a;
+      color: #f1f5f9;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+    h1 { color: #38bdf8; font-size: 2rem; margin-bottom: 0.3rem; }
+    .subtitle { color: #64748b; margin-bottom: 2rem; font-size: 0.95rem; }
+
+    .card {
+      background: #1e293b;
+      border-radius: 20px;
+      padding: 2rem;
+      width: 100%;
+      max-width: 560px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    }
+
+    /* Avatar circle with pulse */
+    .avatar-wrap {
+      display: flex;
+      justify-content: center;
+      margin-bottom: 1.5rem;
+    }
+    .avatar {
+      width: 100px; height: 100px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #0ea5e9, #6366f1);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 2.8rem;
+      position: relative;
+    }
+    .avatar.speaking::after {
+      content: '';
+      position: absolute;
+      inset: -6px;
+      border-radius: 50%;
+      border: 3px solid #22c55e;
+      animation: ring 1s ease-out infinite;
+    }
+    @keyframes ring {
+      0%   { transform: scale(1); opacity: 1; }
+      100% { transform: scale(1.3); opacity: 0; }
+    }
+
+    /* Chat */
+    .chatbox {
+      height: 260px;
+      overflow-y: auto;
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 1rem;
+      margin-bottom: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.6rem;
+    }
+    .msg {
+      padding: 0.65rem 1rem;
+      border-radius: 12px;
+      max-width: 85%;
+      font-size: 0.9rem;
+      line-height: 1.5;
+    }
+    .user-msg { background: #0284c7; align-self: flex-end; border-bottom-right-radius: 3px; }
+    .bot-msg  { background: #334155; align-self: flex-start; border-bottom-left-radius: 3px; }
+
+    /* Status pill */
+    .status-pill {
+      text-align: center;
+      font-size: 0.85rem;
+      color: #94a3b8;
+      margin-bottom: 1.2rem;
+      min-height: 1.2rem;
+    }
+    .status-pill.listening { color: #22c55e; }
+    .status-pill.speaking  { color: #38bdf8; }
+    .status-pill.thinking  { color: #f59e0b; }
+    .status-pill.error     { color: #f87171; }
+
+    /* Buttons */
+    .btn {
+      width: 100%;
+      padding: 1rem;
+      border: none;
+      border-radius: 12px;
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: 0.2s;
+    }
+    .btn-start { background: linear-gradient(135deg, #0ea5e9, #6366f1); color: #fff; }
+    .btn-start:hover { filter: brightness(1.1); }
+    .btn-stop  { background: #ef4444; color: #fff; display: none; }
+    .btn-stop:hover { background: #dc2626; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Unmute banner */
+    .unmute-banner {
+      display: none;
+      background: #f59e0b;
+      color: #000;
+      padding: 0.75rem 1rem;
+      border-radius: 10px;
+      text-align: center;
+      font-weight: 700;
+      cursor: pointer;
+      margin-top: 0.75rem;
+      font-size: 0.9rem;
+    }
+    .unmute-banner:hover { background: #d97706; }
+
+    /* Volume bar */
+    .vol-wrap { display: none; align-items: center; gap: 0.5rem; margin-top: 0.75rem; font-size: 0.8rem; color: #64748b; }
+    .vol-wrap.show { display: flex; }
+    .vol-bar { flex: 1; height: 4px; background: #334155; border-radius: 4px; overflow: hidden; }
+    .vol-fill { height: 100%; background: #22c55e; width: 0%; transition: width 0.1s; }
+  </style>
+</head>
+<body>
+  <h1>🩺 Dr. Alex</h1>
+  <p class="subtitle">AI Voice Medical Assistant — speak naturally</p>
+
+  <div class="card">
+    <div class="avatar-wrap">
+      <div class="avatar" id="avatar">🩺</div>
+    </div>
+
+    <div class="chatbox" id="chatbox">
+      <div class="msg bot-msg">Hello! I'm Dr. Alex. Click "Start" and speak to me.</div>
+    </div>
+
+    <div class="status-pill" id="statusPill">Ready</div>
+
+    <button class="btn btn-start" id="startBtn" onclick="startConversation()">🎙️ Start Conversation</button>
+    <button class="btn btn-stop"  id="stopBtn"  onclick="stopConversation()">⏹ Disconnect</button>
+
+    <div class="unmute-banner" id="unmuteBanner" onclick="unmuteAudio()">
+      🔇 Browser blocked audio — Click here to enable Dr. Alex's voice
+    </div>
+
+    <div class="vol-wrap" id="volWrap">
+      <span>🔊</span>
+      <div class="vol-bar"><div class="vol-fill" id="volFill"></div></div>
+      <span id="volPct">0%</span>
+    </div>
+  </div>
+
+  <!-- Load LiveKit client -->
+  <script src="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js"></script>
+
+  <script>
+    let room = null;
+    let audioCtx = null;
+    let audioElements = [];
+
+    const chatbox     = document.getElementById('chatbox');
+    const statusPill  = document.getElementById('statusPill');
+    const startBtn    = document.getElementById('startBtn');
+    const stopBtn     = document.getElementById('stopBtn');
+    const avatar      = document.getElementById('avatar');
+    const unmuteBanner= document.getElementById('unmuteBanner');
+    const volWrap     = document.getElementById('volWrap');
+    const volFill     = document.getElementById('volFill');
+    const volPct      = document.getElementById('volPct');
+
+    function setStatus(text, cls) {
+      statusPill.textContent = text;
+      statusPill.className = 'status-pill ' + (cls || '');
+    }
+
+    function addMsg(text, isUser) {
+      const el = document.createElement('div');
+      el.className = 'msg ' + (isUser ? 'user-msg' : 'bot-msg');
+      el.textContent = text;
+      chatbox.appendChild(el);
+      chatbox.scrollTop = chatbox.scrollHeight;
+      return el;
+    }
+
+    function getOrUpdateMsg(id, text, isUser) {
+      let el = document.getElementById('msg_' + id);
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'msg_' + id;
+        el.className = 'msg ' + (isUser ? 'user-msg' : 'bot-msg');
+        chatbox.appendChild(el);
+      }
+      el.textContent = text;
+      chatbox.scrollTop = chatbox.scrollHeight;
+    }
+
+    function unmuteAudio() {
+      // Resume AudioContext (needed after user gesture)
+      if (audioCtx && audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+      audioElements.forEach(el => {
+        el.muted = false;
+        el.volume = 1.0;
+        el.play().catch(() => {});
+      });
+      unmuteBanner.style.display = 'none';
+    }
+
+    async function startConversation() {
+      startBtn.disabled = true;
+      setStatus('Connecting...', '');
+
+      try {
+        // 1. Get token from launcher
+        const roomName = 'audio-room-' + Math.random().toString(36).substring(2, 9);
+        const res = await fetch('http://localhost:8080/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ room: roomName, mode: 'audio', participant_name: 'User' })
+        });
+        const data = await res.json();
+        if (!data.token || !data.url) throw new Error('Token fetch failed: ' + JSON.stringify(data));
+
+        // 2. Create AudioContext on user gesture (fixes autoplay)
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+        // 3. Create LiveKit room
+        room = new LivekitClient.Room({
+          adaptiveStream: true,
+          dynacast: true,
+          audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        });
+
+        // 4. Handle incoming audio from bot
+        room.on(LivekitClient.RoomEvent.TrackSubscribed, (track, pub, participant) => {
+          console.log('Track subscribed:', track.kind, 'from', participant.identity);
+          if (track.kind === LivekitClient.Track.Kind.Audio) {
+            const el = track.attach();
+            el.autoplay = true;
+            el.playsInline = true;
+            el.muted = false;
+            el.volume = 1.0;
+            document.body.appendChild(el);
+            audioElements.push(el);
+
+            el.play().then(() => {
+              console.log('Audio playing!');
+              setStatus('🔊 Dr. Alex is ready — speak now', 'listening');
+              volWrap.classList.add('show');
+            }).catch(err => {
+              console.warn('Autoplay blocked:', err);
+              unmuteBanner.style.display = 'block';
+            });
+
+            // Volume meter
+            try {
+              const src = audioCtx.createMediaElementSource(el);
+              const analyser = audioCtx.createAnalyser();
+              analyser.fftSize = 256;
+              src.connect(analyser);
+              analyser.connect(audioCtx.destination);
+              const buf = new Uint8Array(analyser.frequencyBinCount);
+              function drawVol() {
+                analyser.getByteFrequencyData(buf);
+                const avg = buf.reduce((a,b) => a+b, 0) / buf.length;
+                const pct = Math.min(100, avg * 2);
+                volFill.style.width = pct + '%';
+                volPct.textContent = Math.round(pct) + '%';
+                requestAnimationFrame(drawVol);
+              }
+              drawVol();
+            } catch(e) { console.warn('Volume meter error:', e); }
+          }
+        });
+
+        room.on(LivekitClient.RoomEvent.TrackUnsubscribed, (track) => {
+          track.detach();
+        });
+
+        // 5. Agent speaking state
+        room.on(LivekitClient.RoomEvent.ParticipantConnected, (p) => {
+          console.log('Participant connected:', p.identity);
+          if (p.identity.startsWith('agent')) {
+            setStatus('🤖 Dr. Alex joined — speak now!', 'listening');
+          }
+        });
+
+        room.on(LivekitClient.RoomEvent.ActiveSpeakersChanged, (speakers) => {
+          const agentSpeaking = speakers.some(s => s.identity.startsWith('agent'));
+          const userSpeaking  = speakers.some(s => s.identity === 'User');
+          if (agentSpeaking) {
+            avatar.classList.add('speaking');
+            setStatus('🔊 Dr. Alex is speaking...', 'speaking');
+          } else if (userSpeaking) {
+            avatar.classList.remove('speaking');
+            setStatus('🎤 Listening...', 'listening');
+          } else {
+            avatar.classList.remove('speaking');
+            setStatus('💬 Speak to Dr. Alex...', 'listening');
+          }
+        });
+
+        // 6. Transcriptions
+        room.on(LivekitClient.RoomEvent.TranscriptionReceived, (segments, participant) => {
+          const isAgent = participant && participant.identity.startsWith('agent');
+          for (const seg of segments) {
+            getOrUpdateMsg(seg.id, seg.text, !isAgent);
+          }
+        });
+
+        room.on(LivekitClient.RoomEvent.Disconnected, () => {
+          setStatus('Disconnected', 'error');
+          resetUI();
+        });
+
+        // 7. Connect
+        await room.connect(data.url, data.token);
+        console.log('Connected to room:', data.room);
+
+        // 8. Publish mic
+        await room.localParticipant.setMicrophoneEnabled(true);
+        console.log('Mic enabled');
+
+        setStatus('⏳ Waiting for Dr. Alex to join...', '');
+        startBtn.style.display = 'none';
+        stopBtn.style.display = 'block';
+
+      } catch (err) {
+        console.error('Connection error:', err);
+        setStatus('❌ Error: ' + err.message, 'error');
+        startBtn.disabled = false;
+      }
+    }
+
+    async function stopConversation() {
+      if (room) {
+        await room.disconnect();
+        room = null;
+      }
+      audioElements.forEach(el => { el.pause(); el.remove(); });
+      audioElements = [];
+      if (audioCtx) { audioCtx.close(); audioCtx = null; }
+      resetUI();
+    }
+
+    function resetUI() {
+      startBtn.style.display = 'block';
+      startBtn.disabled = false;
+      stopBtn.style.display = 'none';
+      avatar.classList.remove('speaking');
+      unmuteBanner.style.display = 'none';
+      volWrap.classList.remove('show');
+      volFill.style.width = '0%';
+    }
+  </script>
+</body>
+</html>
