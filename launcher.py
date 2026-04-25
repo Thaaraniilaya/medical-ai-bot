@@ -337,7 +337,7 @@ async function startConversation(){
     if(!data.token||!data.url)throw new Error('Token failed: '+JSON.stringify(data));
     room=new LivekitClient.Room({adaptiveStream:true,dynacast:true});
     room.on(LivekitClient.RoomEvent.TrackSubscribed,(track,pub,participant)=>{
-      console.log('Track:',track.kind,'from',participant.identity);
+      console.log('Track:',track.kind,'sid:',track.sid,'from',participant.identity,'source:',pub.source);
       if(track.kind===LivekitClient.Track.Kind.Audio){
         const el=track.attach();
         el.autoplay=true;el.muted=false;el.volume=1.0;
@@ -345,10 +345,20 @@ async function startConversation(){
         el.play().catch(()=>{unmuteEl.style.display='block';});
       }
       if(track.kind===LivekitClient.Track.Kind.Video){
+        console.log('VIDEO TRACK RECEIVED! Attaching to video element...');
         track.attach(avatarVideo);
+        avatarVideo.muted=true;
         avatarVideo.style.display='block';
         placeholder.style.display='none';
+        avatarVideo.play().catch(e=>console.warn('Video play blocked:',e));
       }
+    });
+    room.on(LivekitClient.RoomEvent.ParticipantConnected,(p)=>{
+      console.log('Participant connected:',p.identity,'tracks:',p.trackPublications.size);
+      if(p.identity.startsWith('agent'))setStatus('🤖 Dr. Alex joined!','listening');
+      p.trackPublications.forEach((pub,sid)=>{
+        console.log('  existing track:',pub.kind,'subscribed:',pub.isSubscribed,'source:',pub.source);
+      });
     });
     room.on(LivekitClient.RoomEvent.TrackUnsubscribed,(track)=>{
       track.detach();
@@ -365,9 +375,6 @@ async function startConversation(){
     room.on(LivekitClient.RoomEvent.TranscriptionReceived,(segments,participant)=>{
       const isAgent=participant&&participant.identity.startsWith('agent');
       for(const seg of segments)getOrUpdateMsg(seg.id,seg.text,!isAgent);
-    });
-    room.on(LivekitClient.RoomEvent.ParticipantConnected,(p)=>{
-      if(p.identity.startsWith('agent'))setStatus('🤖 Dr. Alex joined!','listening');
     });
     room.on(LivekitClient.RoomEvent.Disconnected,()=>{setStatus('Disconnected');resetUI();});
     await room.connect(data.url,data.token);
