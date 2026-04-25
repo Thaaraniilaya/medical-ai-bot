@@ -102,10 +102,7 @@ async def lifespan(app: FastAPI):
     print("✅ Bot worker started (audio + video unified)")
     yield
     task.cancel()
-    try:
-        await task
-    except Exception:
-        pass
+    await asyncio.sleep(0.5)  # Give it a moment to clean up
 
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
@@ -117,6 +114,10 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 @app.get("/", response_class=HTMLResponse)
 def launcher_page():
     return HTMLResponse(content=LAUNCHER_HTML)
+
+@app.head("/")
+def health_check():
+    return HTMLResponse(content="", status_code=200)
 
 
 @app.get("/audio", response_class=HTMLResponse)
