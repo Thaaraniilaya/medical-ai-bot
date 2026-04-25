@@ -1,11 +1,11 @@
 """
-Medical AI Bot Launcher - Production Version
-Single process: FastAPI + LiveKit bot workers via asyncio background tasks
+Medical AI Bot Launcher - Clean Production Version
+- Serves the UI
+- Serves LiveKit tokens
+- Bot workers run as separate processes via supervisord
 """
 
 import os
-import sys
-import asyncio
 import socket
 from pathlib import Path
 
@@ -16,17 +16,7 @@ import uvicorn
 from livekit import api
 from dotenv import load_dotenv
 
-# ── Import & register all livekit plugins on main thread ──────────────────────
-from livekit.agents import Agent, AgentSession, JobContext, RoomInputOptions, WorkerOptions
-from livekit.agents.worker import AgentServer
-from livekit.plugins import cartesia, deepgram, silero, spatialreal
-from livekit.plugins.openai import LLM
-
 load_dotenv(override=True)
-
-if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -34,93 +24,6 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 BOT_DIR = Path(__file__).parent
 AUDIO_HTML = (BOT_DIR / "audio_ui.html").read_text(encoding="utf-8")
 
-# Global state
-current_mode = None
-bot_task = None  # asyncio Task
-
-
-# ─── Bot worker factories ────────────────────────────────────────────────────
-
-async def run_audio_worker():
-    SYSTEM_PROMPT = """You are Dr. Alex, a warm professional AI medical assistant.
-Keep responses SHORT (5-15 words). Be friendly and helpful."""
-
-    class AudioAgent(Agent):
-        def __init__(self):
-            super().__init__(instructions=SYSTEM_PROMPT)
-
-    async def entrypoint(ctx: JobContext):
-        print(f"[Audio] Connecting to room: {ctx.room.name}")
-        await ctx.connect()
-        llm = LLM(api_key=os.getenv("GROQ_API_KEY"),
-                  base_url="https://api.groq.com/openai/v1",
-                  model="llama-3.1-8b-instant")
-        tts = cartesia.TTS(api_key=os.getenv("CARTESIA_API_KEY"),
-                           voice="694f9389-aac1-45b6-b726-9d9369183238",
-                           sample_rate=16000)
-        stt = deepgram.STT(api_key=os.getenv("DEEPGRAM_API_KEY"))
-        vad = silero.VAD.load(min_silence_duration=0.6)
-        session = AgentSession(llm=llm, tts=tts, stt=stt, vad=vad)
-        await session.start(agent=AudioAgent(), room=ctx.room,
-                            room_input_options=RoomInputOptions())
-        await session.generate_reply(
-            instructions="Greet the user and introduce yourself as Dr. Alex. Keep it short.")
-        print("[Audio] Bot live!")
-
-    opts = WorkerOptions(
-        entrypoint_fnc=entrypoint,
-        api_key=os.getenv("LIVEKIT_API_KEY"),
-        api_secret=os.getenv("LIVEKIT_API_SECRET"),
-        ws_url=os.getenv("LIVEKIT_URL"),
-    )
-    server = AgentServer.from_server_options(opts)
-    await server.run()
-
-
-async def run_video_worker():
-    SYSTEM_PROMPT = """You are Dr. Alex, a warm professional AI medical assistant with a 3D avatar.
-Keep responses EXTREMELY SHORT (under 10 words). Speak naturally."""
-
-    class AvatarAgent(Agent):
-        def __init__(self):
-            super().__init__(instructions=SYSTEM_PROMPT)
-
-    async def entrypoint(ctx: JobContext):
-        print(f"[Video] Connecting to room: {ctx.room.name}")
-        await ctx.connect()
-        llm = LLM(api_key=os.getenv("GROQ_API_KEY"),
-                  base_url="https://api.groq.com/openai/v1",
-                  model="llama-3.1-8b-instant")
-        tts = cartesia.TTS(api_key=os.getenv("CARTESIA_API_KEY"),
-                           voice="694f9389-aac1-45b6-b726-9d9369183238",
-                           sample_rate=24000)
-        stt = deepgram.STT(api_key=os.getenv("DEEPGRAM_API_KEY"))
-        vad = silero.VAD.load(min_silence_duration=0.6)
-        avatar = spatialreal.AvatarSession(
-            api_key=os.getenv("SPATIALREAL_API_KEY"),
-            app_id=os.getenv("SPATIALREAL_APP_ID"),
-            avatar_id=os.getenv("SPATIALREAL_AVATAR_ID"),
-            sample_rate=24000,
-        )
-        session = AgentSession(llm=llm, tts=tts, stt=stt, vad=vad)
-        await avatar.start(session, room=ctx.room)
-        await session.start(agent=AvatarAgent(), room=ctx.room,
-                            room_input_options=RoomInputOptions())
-        await session.generate_reply(
-            instructions="Greet the user and introduce yourself as Dr. Alex.")
-        print("[Video] Bot live!")
-
-    opts = WorkerOptions(
-        entrypoint_fnc=entrypoint,
-        api_key=os.getenv("LIVEKIT_API_KEY"),
-        api_secret=os.getenv("LIVEKIT_API_SECRET"),
-        ws_url=os.getenv("LIVEKIT_URL"),
-    )
-    server = AgentServer.from_server_options(opts)
-    await server.run()
-
-
-# ─── Routes ──────────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
 def launcher_page():
@@ -134,57 +37,7 @@ def audio_page():
 
 @app.get("/video", response_class=HTMLResponse)
 def video_page():
-    # Video bot uses SpatialReal's own frontend via LiveKit
-    return HTMLResponse(content="""<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>Video Bot</title>
-<style>body{background:#0f172a;color:#f1f5f9;font-family:sans-serif;display:flex;
-align-items:center;justify-content:center;min-height:100vh;flex-direction:column;gap:1rem;}
-.card{background:#1e293b;padding:2rem;border-radius:16px;text-align:center;max-width:500px;}
-h2{color:#a78bfa;margin-bottom:1rem;}p{color:#94a3b8;margin-bottom:1.5rem;}
-.btn{background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:white;border:none;
-padding:1rem 2rem;border-radius:12px;font-size:1rem;font-weight:700;cursor:pointer;}
-</style></head>
-<body>
-<div class="card">
-  <h2>🎬 Video Avatar Bot</h2>
-  <p>Dr. Alex 3D Avatar is running. Use the LiveKit Meet link below to join with video.</p>
-  <p id="info" style="color:#34d399;font-size:0.9rem;">Bot worker is active and waiting for you to join a room.</p>
-  <br>
-  <a href="/" style="color:#60a5fa;font-size:0.9rem;">← Back to launcher</a>
-</div>
-<script>
-  // Auto-redirect to audio UI which works in browser
-  // Video avatar requires LiveKit room join
-</script>
-</body></html>""")
-
-
-@app.post("/start/{mode}")
-async def start_bot(mode: str):
-    global bot_task, current_mode
-
-    if mode not in ("audio", "video"):
-        return JSONResponse({"error": "Invalid mode"}, status_code=400)
-
-    # Cancel existing bot task
-    if bot_task and not bot_task.done():
-        bot_task.cancel()
-        try:
-            await asyncio.wait_for(asyncio.shield(bot_task), timeout=2.0)
-        except:
-            pass
-
-    try:
-        loop = asyncio.get_event_loop()
-        if mode == "audio":
-            bot_task = loop.create_task(run_audio_worker())
-        else:
-            bot_task = loop.create_task(run_video_worker())
-
-        current_mode = mode
-        return JSONResponse({"status": "started", "mode": mode})
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+    return HTMLResponse(content=VIDEO_HTML)
 
 
 @app.post("/token")
@@ -194,7 +47,7 @@ async def get_token(request: Request):
         room_name = data.get("room", "dev-room")
         participant_name = data.get("participant_name", "User")
         mode = data.get("mode", "")
-    except:
+    except Exception:
         room_name = "dev-room"
         participant_name = "User"
         mode = ""
@@ -219,31 +72,10 @@ async def get_token(request: Request):
     return JSONResponse({"token": token, "url": livekit_url, "room": room_name})
 
 
-@app.post("/stop")
-async def stop_bot():
-    global bot_task, current_mode
-    if bot_task and not bot_task.done():
-        bot_task.cancel()
-    current_mode = None
-    return JSONResponse({"status": "stopped"})
-
-
 @app.get("/status")
 def bot_status():
-    running = bot_task is not None and not bot_task.done()
-    return JSONResponse({"running": running, "mode": current_mode if running else None})
+    return JSONResponse({"running": True, "mode": "audio"})
 
-
-@app.get("/check-port/{port}")
-def check_port_ready(port: int):
-    try:
-        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
-            return JSONResponse({"ready": True})
-    except:
-        return JSONResponse({"ready": False})
-
-
-# ─── Launcher HTML ────────────────────────────────────────────────────────────
 
 LAUNCHER_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -262,7 +94,7 @@ LAUNCHER_HTML = """<!DOCTYPE html>
     -webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:.4rem;text-align:center}
   .subtitle{color:#64748b;font-size:1rem;margin-bottom:3rem;text-align:center}
   .cards{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;width:100%;max-width:700px;margin-bottom:2rem}
-  .card{background:#0d1629;border:1.5px solid rgba(99,179,237,.12);border-radius:20px;padding:2rem;text-align:center;transition:all .3s}
+  .card{background:#0d1629;border:1.5px solid rgba(99,179,237,.12);border-radius:20px;padding:2rem;text-align:center;transition:all .3s;text-decoration:none;display:block;color:inherit}
   .card:hover{transform:translateY(-4px)}
   .card.audio:hover{border-color:rgba(59,130,246,.5);box-shadow:0 20px 60px rgba(59,130,246,.15)}
   .card.video:hover{border-color:rgba(139,92,246,.5);box-shadow:0 20px 60px rgba(139,92,246,.15)}
@@ -274,115 +106,181 @@ LAUNCHER_HTML = """<!DOCTYPE html>
   .tag-blue{background:rgba(59,130,246,.15);color:#60a5fa}
   .tag-purple{background:rgba(139,92,246,.15);color:#a78bfa}
   .tag-teal{background:rgba(20,184,166,.15);color:#34d399}
-  .btn{width:100%;padding:.85rem 1.5rem;border:none;border-radius:12px;font-family:'Inter',sans-serif;
-    font-size:.95rem;font-weight:600;cursor:pointer;transition:all .2s;margin-top:1rem}
+  .btn{display:block;width:100%;padding:.85rem 1.5rem;border:none;border-radius:12px;font-family:'Inter',sans-serif;
+    font-size:.95rem;font-weight:600;cursor:pointer;transition:all .2s;margin-top:1rem;text-align:center;text-decoration:none}
   .btn-audio{background:linear-gradient(135deg,#2563eb,#3b82f6);color:white}
   .btn-video{background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:white}
-  .btn:hover{transform:scale(1.03);filter:brightness(1.1)}.btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
-  .spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.3);
-    border-top-color:white;border-radius:50%;animation:spin .8s linear infinite;margin-right:6px;vertical-align:middle}
-  @keyframes spin{to{transform:rotate(360deg)}}
-  .status-bar{background:#0d1629;border:1px solid rgba(99,179,237,.12);border-radius:12px;
-    padding:1rem 1.5rem;width:100%;max-width:700px;display:flex;align-items:center;gap:1rem}
-  .status-dot{width:10px;height:10px;border-radius:50%;background:#64748b;flex-shrink:0}
-  .status-dot.running{background:#22c55e;box-shadow:0 0 8px #22c55e;animation:pulse 2s infinite}
-  .status-dot.starting{background:#f59e0b;box-shadow:0 0 8px #f59e0b;animation:pulse 1s infinite}
-  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
-  .status-text{font-size:.875rem;color:#64748b;flex:1}
-  .ready-banner{display:none;align-items:center;justify-content:space-between;gap:1rem;
-    background:linear-gradient(135deg,rgba(34,197,94,.12),rgba(20,184,166,.08));
-    border:1.5px solid rgba(34,197,94,.4);border-radius:16px;padding:1.2rem 1.8rem;
-    width:100%;max-width:700px;margin-top:1rem}
-  .open-now-btn{display:inline-block;padding:.75rem 1.8rem;background:linear-gradient(135deg,#16a34a,#22c55e);
-    color:white;font-family:'Inter',sans-serif;font-size:1rem;font-weight:700;border-radius:12px;
-    text-decoration:none;border:none;cursor:pointer;box-shadow:0 0 20px rgba(34,197,94,.4);transition:all .2s}
-  .open-now-btn:hover{transform:scale(1.05)}
-  .btn-stop{background:rgba(239,68,68,.15);color:#f87171;border:1px solid rgba(239,68,68,.3);
-    padding:.4rem 1rem;border-radius:8px;font-size:.8rem;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif}
+  .btn:hover{transform:scale(1.03);filter:brightness(1.1)}
+  .live-badge{display:inline-flex;align-items:center;gap:.4rem;background:rgba(34,197,94,.15);
+    color:#4ade80;border:1px solid rgba(34,197,94,.3);padding:.3rem .8rem;border-radius:99px;font-size:.8rem;font-weight:600;margin-bottom:1rem}
+  .live-dot{width:8px;height:8px;border-radius:50%;background:#22c55e;animation:pulse 2s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 </style>
 </head>
 <body>
 <h1>🩺 Medical AI Bot</h1>
-<p class="subtitle">Choose your interaction mode</p>
+<p class="subtitle">Dr. Alex is live — choose your mode</p>
+
 <div class="cards">
-  <div class="card audio">
+  <a class="card audio" href="/audio">
     <span class="card-icon">🎙️</span>
+    <div class="live-badge"><span class="live-dot"></span> Live</div>
     <div class="card-title">Audio Bot</div>
-    <p class="card-desc">Voice-only interaction. Fast and lightweight.</p>
+    <p class="card-desc">Voice conversation with Dr. Alex. Speak naturally, get instant replies.</p>
     <div>
       <span class="tag tag-blue">Deepgram STT</span>
       <span class="tag tag-teal">Cartesia TTS</span>
       <span class="tag tag-blue">Groq LLM</span>
     </div>
-    <button class="btn btn-audio" id="btn-audio" onclick="startBot('audio')">
-      <span id="spin-audio" style="display:none"><span class="spinner"></span></span>Start Audio Bot
-    </button>
-  </div>
-  <div class="card video">
+    <span class="btn btn-audio">Open Audio Bot →</span>
+  </a>
+
+  <a class="card video" href="/video">
     <span class="card-icon">🎬</span>
+    <div class="live-badge"><span class="live-dot"></span> Live</div>
     <div class="card-title">Video Avatar Bot</div>
-    <p class="card-desc">Live 3D avatar with lip-sync powered by SpatialReal.</p>
+    <p class="card-desc">Talk to Dr. Alex's 3D avatar with lip-sync powered by SpatialReal.</p>
     <div>
       <span class="tag tag-purple">SpatialReal Avatar</span>
       <span class="tag tag-teal">Cartesia TTS</span>
       <span class="tag tag-purple">Groq LLM</span>
     </div>
-    <button class="btn btn-video" id="btn-video" onclick="startBot('video')">
-      <span id="spin-video" style="display:none"><span class="spinner"></span></span>Start Video Bot
-    </button>
+    <span class="btn btn-video">Open Video Bot →</span>
+  </a>
+</div>
+</body>
+</html>"""
+
+
+VIDEO_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dr. Alex - Video Avatar</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',sans-serif;background:#0f172a;color:#f1f5f9;min-height:100vh;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;padding:2rem}
+  h1{color:#a78bfa;font-size:2rem;margin-bottom:.3rem}
+  .subtitle{color:#64748b;margin-bottom:2rem;font-size:.95rem}
+  .card{background:#1e293b;border-radius:20px;padding:2rem;width:100%;max-width:560px;text-align:center}
+  .avatar{width:120px;height:120px;border-radius:50%;background:linear-gradient(135deg,#7c3aed,#a78bfa);
+    display:flex;align-items:center;justify-content:center;font-size:3rem;margin:0 auto 1.5rem}
+  .status{color:#94a3b8;font-size:.9rem;margin-bottom:1.5rem;min-height:1.2rem}
+  .btn{width:100%;padding:1rem;border:none;border-radius:12px;font-size:1rem;font-weight:700;
+    cursor:pointer;transition:.2s;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:white}
+  .btn:hover{filter:brightness(1.1)}
+  .btn.stop{background:#ef4444;display:none}
+  .chatbox{height:200px;overflow-y:auto;background:#0f172a;border:1px solid #334155;
+    border-radius:12px;padding:1rem;margin-bottom:1.5rem;display:flex;flex-direction:column;gap:.6rem;text-align:left}
+  .msg{padding:.6rem 1rem;border-radius:10px;max-width:85%;font-size:.875rem}
+  .bot-msg{background:#334155;align-self:flex-start}
+  .user-msg{background:#7c3aed;align-self:flex-end}
+  .back{color:#64748b;font-size:.85rem;margin-top:1rem;text-decoration:none}
+  .back:hover{color:#94a3b8}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js"></script>
+</head>
+<body>
+<h1>🎬 Dr. Alex</h1>
+<p class="subtitle">3D Avatar Medical Assistant</p>
+<div class="card">
+  <div class="avatar" id="avatar">🩺</div>
+  <div class="chatbox" id="chatbox">
+    <div class="msg bot-msg">Hello! I'm Dr. Alex. Click Start to begin.</div>
   </div>
+  <div class="status" id="status">Ready</div>
+  <button class="btn" id="startBtn" onclick="startConversation()">🎙️ Start Conversation</button>
+  <button class="btn stop" id="stopBtn" onclick="stopConversation()">⏹ Disconnect</button>
 </div>
-<div class="status-bar">
-  <div class="status-dot" id="status-dot"></div>
-  <div class="status-text" id="status-text">No bot running. Choose a mode above.</div>
-  <div id="action-btns"></div>
-</div>
-<div class="ready-banner" id="ready-banner">
-  <div style="font-size:.95rem;color:#86efac;font-weight:600"><span style="font-size:1.3rem;margin-right:.5rem">✅</span>Bot is ready!</div>
-  <a class="open-now-btn" id="ready-link" href="#" target="_blank">Open Bot →</a>
-</div>
+<a class="back" href="/">← Back to launcher</a>
+
 <script>
-async function startBot(mode){
-  const btn=document.getElementById('btn-'+mode);
-  const spin=document.getElementById('spin-'+mode);
-  btn.disabled=true; spin.style.display='inline';
-  document.getElementById('ready-banner').style.display='none';
+let room=null, audioElements=[], audioCtx=null;
+const statusEl=document.getElementById('status');
+const startBtn=document.getElementById('startBtn');
+const stopBtn=document.getElementById('stopBtn');
+const avatar=document.getElementById('avatar');
+const chatbox=document.getElementById('chatbox');
+
+function addMsg(text,isUser){
+  const el=document.createElement('div');
+  el.className='msg '+(isUser?'user-msg':'bot-msg');
+  el.textContent=text; chatbox.appendChild(el);
+  chatbox.scrollTop=chatbox.scrollHeight;
+}
+function getOrUpdateMsg(id,text,isUser){
+  let el=document.getElementById('msg_'+id);
+  if(!el){el=document.createElement('div');el.id='msg_'+id;el.className='msg '+(isUser?'user-msg':'bot-msg');chatbox.appendChild(el);}
+  el.textContent=text; chatbox.scrollTop=chatbox.scrollHeight;
+}
+
+async function startConversation(){
+  startBtn.disabled=true; statusEl.textContent='Connecting...';
   try{
-    const res=await fetch('/start/'+mode,{method:'POST'});
+    audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+    const roomName='video-room-'+Math.random().toString(36).substring(2,9);
+    const res=await fetch('/token',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({room:roomName,mode:'video',participant_name:'User'})});
     const data=await res.json();
-    if(data.status==='started'){
-      updateStatus('starting',mode);
-      setTimeout(()=>{updateStatus('running',mode);showBanner('/'+mode,mode);},8000);
-    } else { alert('Error: '+(data.error||'Unknown')); }
-  }catch(e){alert('Failed: '+e.message);}
-  finally{btn.disabled=false;spin.style.display='none';}
+    if(!data.token||!data.url) throw new Error('Token failed');
+
+    room=new LivekitClient.Room({adaptiveStream:true,dynacast:true});
+
+    room.on(LivekitClient.RoomEvent.TrackSubscribed,(track,pub,participant)=>{
+      if(track.kind===LivekitClient.Track.Kind.Audio){
+        const el=track.attach();
+        el.autoplay=true; el.muted=false; el.volume=1.0;
+        document.body.appendChild(el); audioElements.push(el);
+        el.play().catch(()=>{});
+      }
+      if(track.kind===LivekitClient.Track.Kind.Video){
+        const el=track.attach();
+        el.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;object-fit:cover;z-index:-1;opacity:.3';
+        document.body.appendChild(el);
+      }
+    });
+
+    room.on(LivekitClient.RoomEvent.ActiveSpeakersChanged,(speakers)=>{
+      const agentSpeaking=speakers.some(s=>s.identity.startsWith('agent'));
+      avatar.style.boxShadow=agentSpeaking?'0 0 30px #a78bfa':'none';
+      statusEl.textContent=agentSpeaking?'🔊 Dr. Alex is speaking...':'💬 Speak to Dr. Alex...';
+    });
+
+    room.on(LivekitClient.RoomEvent.TranscriptionReceived,(segments,participant)=>{
+      const isAgent=participant&&participant.identity.startsWith('agent');
+      for(const seg of segments) getOrUpdateMsg(seg.id,seg.text,!isAgent);
+    });
+
+    room.on(LivekitClient.RoomEvent.ParticipantConnected,(p)=>{
+      if(p.identity.startsWith('agent')) statusEl.textContent='🤖 Dr. Alex joined!';
+    });
+
+    await room.connect(data.url,data.token);
+    await room.localParticipant.setMicrophoneEnabled(true);
+    statusEl.textContent='⏳ Waiting for Dr. Alex...';
+    startBtn.style.display='none'; stopBtn.style.display='block';
+  }catch(e){
+    statusEl.textContent='Error: '+e.message;
+    startBtn.disabled=false;
+  }
 }
-function showBanner(url,mode){
-  const banner=document.getElementById('ready-banner');
-  const link=document.getElementById('ready-link');
-  link.href=url; link.textContent='Open '+(mode==='audio'?'Audio':'Video')+' Bot →';
-  banner.style.display='flex';
+
+async function stopConversation(){
+  if(room){await room.disconnect();room=null;}
+  audioElements.forEach(el=>{el.pause();el.remove();}); audioElements=[];
+  if(audioCtx){audioCtx.close();audioCtx=null;}
+  startBtn.style.display='block'; startBtn.disabled=false;
+  stopBtn.style.display='none'; statusEl.textContent='Disconnected';
+  avatar.style.boxShadow='none';
 }
-function updateStatus(state,mode){
-  const dot=document.getElementById('status-dot');
-  const text=document.getElementById('status-text');
-  const actions=document.getElementById('action-btns');
-  const label=mode==='audio'?'Audio Bot':'Video Avatar Bot';
-  if(state==='starting'){dot.className='status-dot starting';text.innerHTML='<strong>'+label+'</strong> is starting...';actions.innerHTML='<button class="btn-stop" onclick="stopBot()">Cancel</button>';}
-  else if(state==='running'){dot.className='status-dot running';text.innerHTML='<strong>'+label+'</strong> is running';actions.innerHTML='<button class="btn-stop" onclick="stopBot()">Stop</button>';}
-  else{dot.className='status-dot';text.textContent='No bot running. Choose a mode above.';actions.innerHTML='';}
-}
-async function stopBot(){
-  await fetch('/stop',{method:'POST'});
-  document.getElementById('ready-banner').style.display='none';
-  updateStatus(false,null);
-}
-fetch('/status').then(r=>r.json()).then(d=>{if(d.running)updateStatus('running',d.mode);});
 </script>
-</body></html>"""
+</body>
+</html>"""
 
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
-    print(f"Starting Medical AI Bot on port {port}")
+    print(f"Starting Medical AI Bot Launcher on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
