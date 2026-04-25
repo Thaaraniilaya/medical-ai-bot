@@ -340,9 +340,12 @@ async function startConversation(){
       body:JSON.stringify({room:roomName,mode:'video',participant_name:'User'})});
     const data=await res.json();
     if(!data.token||!data.url)throw new Error('Token failed: '+JSON.stringify(data));
-    room=new LivekitClient.Room({adaptiveStream:true,dynacast:true});
+    room=new LivekitClient.Room({
+      adaptiveStream: false,
+      dynacast: false,
+    });
     room.on(LivekitClient.RoomEvent.TrackSubscribed,(track,pub,participant)=>{
-      console.log('Track:',track.kind,'sid:',track.sid,'from',participant.identity,'source:',pub.source);
+      console.log('TRACK SUBSCRIBED kind='+track.kind+' from='+participant.identity+' source='+pub.source);
       if(track.kind===LivekitClient.Track.Kind.Audio){
         const el=track.attach();
         el.autoplay=true;el.muted=false;el.volume=1.0;
@@ -350,13 +353,19 @@ async function startConversation(){
         el.play().catch(()=>{unmuteEl.style.display='block';});
       }
       if(track.kind===LivekitClient.Track.Kind.Video){
-        console.log('VIDEO TRACK RECEIVED! Attaching to video element...');
-        track.attach(avatarVideo);
-        avatarVideo.muted=true;
-        avatarVideo.style.display='block';
+        console.log('VIDEO TRACK! attaching...');
+        const el = track.attach();
+        el.autoplay=true;
+        el.playsInline=true;
+        el.muted=true;
+        el.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;object-fit:cover;z-index:1;background:#000';
+        document.body.appendChild(el);
         placeholder.style.display='none';
-        avatarVideo.play().catch(e=>console.warn('Video play blocked:',e));
+        el.play().catch(e=>console.warn('video play err:',e));
       }
+    });
+    room.on(LivekitClient.RoomEvent.TrackPublished,(pub,participant)=>{
+      console.log('TRACK PUBLISHED kind='+pub.kind+' from='+participant.identity+' subscribed='+pub.isSubscribed);
     });
     room.on(LivekitClient.RoomEvent.ParticipantConnected,(p)=>{
       console.log('Participant connected:',p.identity,'tracks:',p.trackPublications.size);
