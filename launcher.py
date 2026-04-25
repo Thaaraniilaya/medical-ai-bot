@@ -16,6 +16,12 @@ import uvicorn
 from livekit import api
 from dotenv import load_dotenv
 
+# ── Import & register all livekit plugins on main thread ──────────────────────
+from livekit.agents import Agent, AgentSession, JobContext, RoomInputOptions, WorkerOptions
+from livekit.agents.worker import AgentServer
+from livekit.plugins import cartesia, deepgram, silero, spatialreal
+from livekit.plugins.openai import LLM
+
 load_dotenv(override=True)
 
 if sys.platform == "win32":
@@ -36,11 +42,6 @@ bot_task = None  # asyncio Task
 # ─── Bot worker factories ────────────────────────────────────────────────────
 
 async def run_audio_worker():
-    from livekit.agents import Agent, AgentSession, JobContext, RoomInputOptions, WorkerOptions
-    from livekit.agents.worker import Worker
-    from livekit.plugins import cartesia, deepgram, silero
-    from livekit.plugins.openai import LLM
-
     SYSTEM_PROMPT = """You are Dr. Alex, a warm professional AI medical assistant.
 Keep responses SHORT (5-15 words). Be friendly and helpful."""
 
@@ -72,16 +73,11 @@ Keep responses SHORT (5-15 words). Be friendly and helpful."""
         api_secret=os.getenv("LIVEKIT_API_SECRET"),
         ws_url=os.getenv("LIVEKIT_URL"),
     )
-    worker = Worker(opts)
-    await worker.run()
+    server = AgentServer.from_server_options(opts)
+    await server.run()
 
 
 async def run_video_worker():
-    from livekit.agents import Agent, AgentSession, JobContext, RoomInputOptions, WorkerOptions
-    from livekit.agents.worker import Worker
-    from livekit.plugins import cartesia, deepgram, silero, spatialreal
-    from livekit.plugins.openai import LLM
-
     SYSTEM_PROMPT = """You are Dr. Alex, a warm professional AI medical assistant with a 3D avatar.
 Keep responses EXTREMELY SHORT (under 10 words). Speak naturally."""
 
@@ -120,8 +116,8 @@ Keep responses EXTREMELY SHORT (under 10 words). Speak naturally."""
         api_secret=os.getenv("LIVEKIT_API_SECRET"),
         ws_url=os.getenv("LIVEKIT_URL"),
     )
-    worker = Worker(opts)
-    await worker.run()
+    server = AgentServer.from_server_options(opts)
+    await server.run()
 
 
 # ─── Routes ──────────────────────────────────────────────────────────────────
