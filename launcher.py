@@ -96,7 +96,7 @@ async def lifespan(app: FastAPI):
         api_secret=os.getenv("LIVEKIT_API_SECRET"),
         ws_url=os.getenv("LIVEKIT_URL"),
         port=8081,
-        num_idle_processes=1,
+        num_idle_processes=0,
     ))
     task = asyncio.create_task(server.run())
     print("✅ Bot worker started (audio + video unified)")
@@ -378,6 +378,29 @@ async function startConversation(){
     });
     room.on(LivekitClient.RoomEvent.Disconnected,()=>{setStatus('Disconnected');resetUI();});
     await room.connect(data.url,data.token);
+    // Check already-connected participants for existing video tracks
+    room.remoteParticipants.forEach((p)=>{
+      console.log('Already connected:',p.identity);
+      p.trackPublications.forEach((pub)=>{
+        console.log('  track:',pub.kind,'subscribed:',pub.isSubscribed);
+        if(pub.isSubscribed && pub.track){
+          if(pub.track.kind===LivekitClient.Track.Kind.Video){
+            console.log('Attaching existing video track from',p.identity);
+            pub.track.attach(avatarVideo);
+            avatarVideo.muted=true;
+            avatarVideo.style.display='block';
+            placeholder.style.display='none';
+            avatarVideo.play().catch(e=>console.warn('Video play:',e));
+          }
+          if(pub.track.kind===LivekitClient.Track.Kind.Audio){
+            const el=pub.track.attach();
+            el.autoplay=true;el.muted=false;el.volume=1.0;
+            document.body.appendChild(el);audioElements.push(el);
+            el.play().catch(()=>{unmuteEl.style.display='block';});
+          }
+        }
+      });
+    });
     await room.localParticipant.setMicrophoneEnabled(true);
     setStatus('⏳ Waiting for Dr. Alex...');
     startBtn.style.display='none';stopBtn.style.display='block';
