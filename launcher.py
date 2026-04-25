@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 # ── Register plugins on main thread (required by livekit) ────────────────────
 from livekit.agents import Agent, AgentSession, JobContext, RoomInputOptions, WorkerOptions
 from livekit.agents.worker import AgentServer
-from livekit.plugins import cartesia, deepgram, silero, spatialreal
+from livekit.plugins import cartesia, deepgram, spatialreal
 from livekit.plugins.openai import LLM
 
 load_dotenv(override=True)
@@ -45,83 +45,65 @@ class VideoAgent(Agent):
         super().__init__(instructions=VIDEO_PROMPT)
 
 
-async def audio_entrypoint(ctx: JobContext):
-    print(f"[Audio] Room: {ctx.room.name}")
+async def unified_entrypoint(ctx: JobContext):
+    """Single entrypoint — routes to audio or video based on room name"""
+    room_name = ctx.room.name
+    is_video = room_name.startswith("video-room")
+    print(f"[Bot] Room: {room_name} → {'VIDEO' if is_video else 'AUDIO'} mode")
+
     await ctx.connect()
+
     llm = LLM(api_key=os.getenv("GROQ_API_KEY"),
                base_url="https://api.groq.com/openai/v1",
                model="llama-3.1-8b-instant")
-    tts = cartesia.TTS(api_key=os.getenv("CARTESIA_API_KEY"),
-                       voice="694f9389-aac1-45b6-b726-9d9369183238",
-                       sample_rate=16000)
     stt = deepgram.STT(api_key=os.getenv("DEEPGRAM_API_KEY"))
-    vad = silero.VAD.load(min_silence_duration=0.5)
-    session = AgentSession(llm=llm, tts=tts, stt=stt, vad=vad)
-    await session.start(agent=AudioAgent(), room=ctx.room,
-                        room_input_options=RoomInputOptions())
-    await session.generate_reply(
-        instructions="Greet the user briefly as Dr. Alex.")
-    print("[Audio] Live!")
 
+    if is_video:
+        tts = cartesia.TTS(api_key=os.getenv("CARTESIA_API_KEY"),
+                           voice="694f9389-aac1-45b6-b726-9d9369183238",
+                           sample_rate=24000)
+        avatar = spatialreal.AvatarSession(
+            api_key=os.getenv("SPATIALREAL_API_KEY"),
+            app_id=os.getenv("SPATIALREAL_APP_ID"),
+            avatar_id=os.getenv("SPATIALREAL_AVATAR_ID"),
+            sample_rate=24000,
+        )
+        session = AgentSession(llm=llm, tts=tts, stt=stt)
+        await avatar.start(session, room=ctx.room)
+        await session.start(agent=VideoAgent(), room=ctx.room,
+                            room_input_options=RoomInputOptions())
+    else:
+        tts = cartesia.TTS(api_key=os.getenv("CARTESIA_API_KEY"),
+                           voice="694f9389-aac1-45b6-b726-9d9369183238",
+                           sample_rate=16000)
+        session = AgentSession(llm=llm, tts=tts, stt=stt)
+        await session.start(agent=AudioAgent(), room=ctx.room,
+                            room_input_options=RoomInputOptions())
 
-async def video_entrypoint(ctx: JobContext):
-    print(f"[Video] Room: {ctx.room.name}")
-    await ctx.connect()
-    llm = LLM(api_key=os.getenv("GROQ_API_KEY"),
-               base_url="https://api.groq.com/openai/v1",
-               model="llama-3.1-8b-instant")
-    tts = cartesia.TTS(api_key=os.getenv("CARTESIA_API_KEY"),
-                       voice="694f9389-aac1-45b6-b726-9d9369183238",
-                       sample_rate=24000)
-    stt = deepgram.STT(api_key=os.getenv("DEEPGRAM_API_KEY"))
-    vad = silero.VAD.load(min_silence_duration=0.5)
-    avatar = spatialreal.AvatarSession(
-        api_key=os.getenv("SPATIALREAL_API_KEY"),
-        app_id=os.getenv("SPATIALREAL_APP_ID"),
-        avatar_id=os.getenv("SPATIALREAL_AVATAR_ID"),
-        sample_rate=24000,
-    )
-    session = AgentSession(llm=llm, tts=tts, stt=stt, vad=vad)
-    await avatar.start(session, room=ctx.room)
-    await session.start(agent=VideoAgent(), room=ctx.room,
-                        room_input_options=RoomInputOptions())
     await session.generate_reply(
-        instructions="Greet the user briefly as Dr. Alex.")
-    print("[Video] Live!")
+        instructions="Greet the user briefly and introduce yourself as Dr. Alex.")
+    print(f"[Bot] Live in {'VIDEO' if is_video else 'AUDIO'} mode!")
 
 
 # ── Lifespan: start both bot workers when server starts ──────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Build AgentServers
-    audio_server = AgentServer.from_server_options(WorkerOptions(
-        entrypoint_fnc=audio_entrypoint,
+    # Single AgentServer handles both audio and video rooms
+    server = AgentServer.from_server_options(WorkerOptions(
+        entrypoint_fnc=unified_entrypoint,
         api_key=os.getenv("LIVEKIT_API_KEY"),
         api_secret=os.getenv("LIVEKIT_API_SECRET"),
         ws_url=os.getenv("LIVEKIT_URL"),
         port=8081,
+        num_idle_processes=1,
     ))
-    video_server = AgentServer.from_server_options(WorkerOptions(
-        entrypoint_fnc=video_entrypoint,
-        api_key=os.getenv("LIVEKIT_API_KEY"),
-        api_secret=os.getenv("LIVEKIT_API_SECRET"),
-        ws_url=os.getenv("LIVEKIT_URL"),
-        port=8082,
-    ))
-
-    # Start both as background tasks in the same event loop
-    audio_task = asyncio.create_task(audio_server.run())
-    video_task = asyncio.create_task(video_server.run())
-    print("✅ Audio + Video bot workers started")
-
-    yield  # Server is running
-
-    # Shutdown
-    audio_task.cancel()
-    video_task.cancel()
+    task = asyncio.create_task(server.run())
+    print("✅ Bot worker started (audio + video unified)")
+    yield
+    task.cancel()
     try:
-        await asyncio.gather(audio_task, video_task, return_exceptions=True)
+        await task
     except Exception:
         pass
 
