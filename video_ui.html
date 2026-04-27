@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dr. Alex - Video Avatar</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',sans-serif;background:#000;color:#f1f5f9;min-height:100vh;overflow:hidden;position:relative}
+
+  #avatarVideo{position:fixed;top:0;left:0;width:100%;height:100%;object-fit:cover;z-index:0;display:none;background:#0f172a}
+
+  .overlay{position:fixed;bottom:0;left:0;right:0;
+    background:linear-gradient(to top,rgba(0,0,0,.85) 0%,rgba(0,0,0,.4) 60%,transparent 100%);
+    z-index:10;padding:1.5rem 1.5rem 1rem;display:flex;flex-direction:column;gap:.75rem}
+
+  .nametag{position:fixed;top:1.2rem;left:1.5rem;z-index:20;display:flex;align-items:center;gap:.5rem}
+  .nametag h1{font-size:1.4rem;font-weight:800;color:#fff;text-shadow:0 2px 8px rgba(0,0,0,.8)}
+  .live-dot{width:10px;height:10px;border-radius:50%;background:#22c55e;box-shadow:0 0 8px #22c55e;animation:pulse 2s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+  .chatbox{max-height:140px;overflow-y:auto;display:flex;flex-direction:column;gap:.4rem;align-items:flex-start}
+  .chatbox::-webkit-scrollbar{width:3px}
+  .chatbox::-webkit-scrollbar-thumb{background:rgba(255,255,255,.2);border-radius:3px}
+  .msg{padding:.5rem .9rem;border-radius:12px;max-width:70%;font-size:.875rem;line-height:1.4;word-wrap:break-word;backdrop-filter:blur(10px)}
+  .bot-msg{background:rgba(30,41,59,.85);color:#f1f5f9;align-self:flex-start;margin-right:auto}
+  .user-msg{background:rgba(124,58,237,.85);color:#fff;align-self:flex-end;margin-left:auto}
+
+  .controls{display:flex;align-items:center;gap:.75rem}
+  .status{flex:1;font-size:.8rem;color:rgba(255,255,255,.7);background:rgba(0,0,0,.4);padding:.35rem .8rem;border-radius:99px;backdrop-filter:blur(10px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .status.listening{color:#4ade80}
+  .status.speaking{color:#a78bfa}
+  .btn-stop{background:rgba(239,68,68,.85);color:white;border:none;padding:.5rem 1.2rem;border-radius:10px;font-size:.875rem;font-weight:700;cursor:pointer;backdrop-filter:blur(10px);white-space:nowrap}
+  .btn-stop:hover{background:rgba(239,68,68,1)}
+
+  .start-screen{position:fixed;inset:0;z-index:30;background:linear-gradient(135deg,#0f172a,#1e1b4b);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1.5rem;padding:2rem}
+  .start-screen h1{font-size:2.5rem;font-weight:800;background:linear-gradient(135deg,#a78bfa,#60a5fa);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+  .start-screen p{color:#94a3b8;font-size:1rem;text-align:center;max-width:400px}
+  .btn-start{background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:white;border:none;padding:1rem 2.5rem;border-radius:14px;font-size:1.1rem;font-weight:700;cursor:pointer;transition:.2s;box-shadow:0 0 30px rgba(139,92,246,.4)}
+  .btn-start:hover{transform:scale(1.05);filter:brightness(1.1)}
+  .btn-start:disabled{opacity:.5;cursor:not-allowed;transform:none}
+
+  .avatar-placeholder{position:fixed;inset:0;z-index:1;background:linear-gradient(135deg,#1e1b4b,#0f172a);display:flex;align-items:center;justify-content:center;font-size:8rem}
+  .avatar-placeholder.speaking{animation:bgPulse 1s ease-in-out infinite}
+  @keyframes bgPulse{0%,100%{background:linear-gradient(135deg,#1e1b4b,#0f172a)}50%{background:linear-gradient(135deg,#2e1b6b,#1f0f3a)}}
+
+  .unmute{display:none;position:fixed;top:1rem;right:1rem;z-index:50;background:#f59e0b;color:#000;padding:.6rem 1rem;border-radius:10px;font-weight:700;cursor:pointer;font-size:.85rem}
+  .back{position:fixed;bottom:.5rem;right:1rem;z-index:20;color:rgba(255,255,255,.3);font-size:.75rem;text-decoration:none}
+  .back:hover{color:rgba(255,255,255,.6)}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js"></script>
+</head>
+<body>
+
+<div class="start-screen" id="startScreen">
+  <h1>🩺 Dr. Alex</h1>
+  <p>Your AI medical assistant with a live avatar. Click start and speak naturally.</p>
+  <button class="btn-start" id="startBtn" onclick="startConversation()">🎙️ Start Conversation</button>
+</div>
+
+<div class="avatar-placeholder" id="avatarPlaceholder">🩺</div>
+<video id="avatarVideo" autoplay playsinline></video>
+
+<div class="nametag" id="nametag" style="display:none">
+  <div class="live-dot" id="liveDot" style="display:none"></div>
+  <h1>Dr. Alex</h1>
+</div>
+
+<div class="overlay" id="overlay" style="display:none">
+  <div class="chatbox" id="chatbox"></div>
+  <div class="controls">
+    <div class="status" id="status">Connecting...</div>
+    <button class="btn-stop" onclick="stopConversation()">⏹ End</button>
+  </div>
+</div>
+
+<div class="unmute" id="unmute" onclick="unmuteAll()">🔇 Tap to enable audio</div>
+<a class="back" href="/">← Back</a>
+
+<script>
+let room=null,audioElements=[],audioCtx=null;
+const statusEl=document.getElementById('status');
+const avatarVideo=document.getElementById('avatarVideo');
+const placeholder=document.getElementById('avatarPlaceholder');
+const chatbox=document.getElementById('chatbox');
+const overlay=document.getElementById('overlay');
+const nametag=document.getElementById('nametag');
+const liveDot=document.getElementById('liveDot');
+const unmuteEl=document.getElementById('unmute');
+const startScreen=document.getElementById('startScreen');
+
+function setStatus(txt,cls){statusEl.textContent=txt;statusEl.className='status '+(cls||'');}
+
+function getOrUpdateMsg(id,text,isUser){
+  let el=document.getElementById('msg_'+id);
+  if(!el){
+    el=document.createElement('div');
+    el.id='msg_'+id;
+    el.className='msg '+(isUser?'user-msg':'bot-msg');
+    chatbox.appendChild(el);
+  }
+  el.textContent=text;
+  chatbox.scrollTop=chatbox.scrollHeight;
+}
+
+function unmuteAll(){
+  if(audioCtx&&audioCtx.state==='suspended')audioCtx.resume();
+  audioElements.forEach(el=>{el.muted=false;el.volume=1.0;el.play().catch(()=>{});});
+  unmuteEl.style.display='none';
+}
+
+async function startConversation(){
+  const btn=document.getElementById('startBtn');
+  btn.disabled=true;btn.textContent='Connecting...';
+  try{
+    audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+    const roomName='video-room-'+Math.random().toString(36).substring(2,9);
+    const res=await fetch('/token',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({room:roomName,mode:'video',participant_name:'User'})
+    });
+    const data=await res.json();
+    if(!data.token||!data.url)throw new Error('Token failed');
+
+    room=new LivekitClient.Room({adaptiveStream:false,dynacast:false});
+
+    room.on(LivekitClient.RoomEvent.TrackSubscribed,(track,pub,participant)=>{
+      if(track.kind===LivekitClient.Track.Kind.Audio){
+        const el=track.attach();
+        el.autoplay=true;el.muted=false;el.volume=1.0;
+        document.body.appendChild(el);audioElements.push(el);
+        el.play().catch(()=>{unmuteEl.style.display='block';});
+      }
+      if(track.kind===LivekitClient.Track.Kind.Video){
+        track.attach(avatarVideo);
+        avatarVideo.style.display='block';
+        placeholder.style.display='none';
+        liveDot.style.display='block';
+      }
+    });
+
+    room.on(LivekitClient.RoomEvent.TrackUnsubscribed,(track)=>{
+      track.detach();
+      if(track.kind===LivekitClient.Track.Kind.Video){
+        avatarVideo.style.display='none';
+        placeholder.style.display='flex';
+        liveDot.style.display='none';
+      }
+    });
+
+    room.on(LivekitClient.RoomEvent.ActiveSpeakersChanged,(speakers)=>{
+      const agentSpeaking=speakers.some(s=>!s.isLocal);
+      const userSpeaking=speakers.some(s=>s.isLocal);
+      if(agentSpeaking){placeholder.classList.add('speaking');setStatus('🔊 Dr. Alex is speaking...','speaking');}
+      else if(userSpeaking){placeholder.classList.remove('speaking');setStatus('🎤 Listening...','listening');}
+      else{placeholder.classList.remove('speaking');setStatus('💬 Speak to Dr. Alex...');}
+    });
+
+    room.on(LivekitClient.RoomEvent.TranscriptionReceived,(segments,participant)=>{
+      const isLocalOrNull=(participant==null||participant.isLocal);
+      for(const seg of segments){
+        if(seg.text&&seg.text.trim())getOrUpdateMsg(seg.id,seg.text,isLocalOrNull);
+      }
+    });
+
+    room.on(LivekitClient.RoomEvent.ParticipantConnected,(p)=>{
+      if(!p.isLocal)setStatus('🤖 Dr. Alex joined!','listening');
+    });
+
+    room.on(LivekitClient.RoomEvent.Disconnected,()=>{setStatus('Disconnected');resetUI();});
+
+    await room.connect(data.url,data.token);
+    await room.localParticipant.setMicrophoneEnabled(true);
+
+    startScreen.style.display='none';
+    overlay.style.display='flex';
+    nametag.style.display='flex';
+    setStatus('⏳ Waiting for Dr. Alex...','');
+
+  }catch(e){
+    console.error(e);
+    btn.disabled=false;btn.textContent='🎙️ Start Conversation';
+    alert('Error: '+e.message);
+  }
+}
+
+async function stopConversation(){
+  if(room){await room.disconnect();room=null;}
+  audioElements.forEach(el=>{el.pause();el.remove();});audioElements=[];
+  if(audioCtx){audioCtx.close();audioCtx=null;}
+  resetUI();
+}
+
+function resetUI(){
+  startScreen.style.display='flex';
+  overlay.style.display='none';
+  nametag.style.display='none';
+  avatarVideo.style.display='none';
+  placeholder.style.display='flex';
+  placeholder.classList.remove('speaking');
+  liveDot.style.display='none';
+  unmuteEl.style.display='none';
+  const btn=document.getElementById('startBtn');
+  if(btn){btn.disabled=false;btn.textContent='🎙️ Start Conversation';}
+}
+</script>
+</body>
+</html>

@@ -15,31 +15,31 @@ import uvicorn
 from livekit import api
 from dotenv import load_dotenv
 
-# ── Register plugins on main thread (required by livekit) ────────────────────
 from livekit.agents import Agent, AgentSession, JobContext, RoomInputOptions, WorkerOptions
 from livekit.agents.worker import AgentServer
-from livekit.plugins import cartesia, deepgram, spatialreal
+from livekit.plugins import cartesia, deepgram, spatialreal, tavus
 from livekit.plugins.openai import LLM
 
 load_dotenv(override=True)
 
 BOT_DIR = Path(__file__).parent
 AUDIO_HTML = (BOT_DIR / "audio_ui.html").read_text(encoding="utf-8")
+VIDEO_HTML = (BOT_DIR / "video_ui.html").read_text(encoding="utf-8")
 
-# ── Agent definitions ─────────────────────────────────────────────────────────
+# ── Prompts ───────────────────────────────────────────────────────────────────
 
 AUDIO_PROMPT = """You are Dr. Alex, a professional AI medical assistant speaking via voice.
 STRICT RULES:
 - Keep responses SHORT (under 15 words)
 - NEVER use asterisks or action text like *smile* or *leaning*
-- Speak naturally and directly, no roleplay actions
+- Speak naturally and directly
 - Be warm and helpful"""
 
 VIDEO_PROMPT = """You are Dr. Alex, a professional AI medical assistant with a 3D avatar.
 STRICT RULES:
 - Keep responses EXTREMELY SHORT (under 10 words)
 - NEVER use asterisks or action text like *smile* or *nods*
-- Speak naturally and directly, no roleplay actions
+- Speak naturally and directly
 - Be warm and professional"""
 
 
@@ -54,7 +54,6 @@ class VideoAgent(Agent):
 
 
 async def unified_entrypoint(ctx: JobContext):
-    """Single entrypoint — routes to audio or video based on room name"""
     room_name = ctx.room.name
     is_video = room_name.startswith("video-room")
     print(f"[Bot] Room: {room_name} → {'VIDEO' if is_video else 'AUDIO'} mode")
@@ -69,15 +68,19 @@ async def unified_entrypoint(ctx: JobContext):
     if is_video:
         tts = cartesia.TTS(api_key=os.getenv("CARTESIA_API_KEY"),
                            voice="694f9389-aac1-45b6-b726-9d9369183238",
-                           sample_rate=24000)
-        avatar = spatialreal.AvatarSession(
-            api_key=os.getenv("SPATIALREAL_API_KEY"),
-            app_id=os.getenv("SPATIALREAL_APP_ID"),
-            avatar_id=os.getenv("SPATIALREAL_AVATAR_ID"),
-            sample_rate=24000,
+                           sample_rate=16000)
+        avatar = tavus.AvatarSession(
+            replica_id=os.getenv("TAVUS_REPLICA_ID"),
+            api_key=os.getenv("TAVUS_API_KEY"),
         )
         session = AgentSession(llm=llm, tts=tts, stt=stt)
-        await avatar.start(session, room=ctx.room)
+        print("[Video] Starting Tavus avatar...")
+        try:
+            await avatar.start(session, room=ctx.room)
+            print("[Video] Tavus avatar started!")
+        except Exception as e:
+            print(f"[Video] Avatar ERROR: {e}")
+            raise
         await session.start(agent=VideoAgent(), room=ctx.room,
                             room_input_options=RoomInputOptions())
     else:
@@ -93,7 +96,7 @@ async def unified_entrypoint(ctx: JobContext):
     print(f"[Bot] Live in {'VIDEO' if is_video else 'AUDIO'} mode!")
 
 
-# ── Lifespan: start both bot workers when server starts ──────────────────────
+# ── Lifespan ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -106,18 +109,14 @@ async def lifespan(app: FastAPI):
         num_idle_processes=0,
     ))
     task = asyncio.create_task(server.run())
-    # Swallow any task exceptions so they don't crash the lifespan
     task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
     print("✅ Bot worker started (audio + video unified)")
-
-    yield  # ← server runs here
-
-    # Shutdown: cancel task, ignore CancelledError
+    yield
     task.cancel()
     await asyncio.sleep(0.5)
 
 
-# ── FastAPI app ───────────────────────────────────────────────────────────────
+# ── App ───────────────────────────────────────────────────────────────────────
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -131,16 +130,13 @@ def launcher_page():
 def health_check():
     return HTMLResponse(content="", status_code=200)
 
-
 @app.get("/audio", response_class=HTMLResponse)
 def audio_page():
     return HTMLResponse(content=AUDIO_HTML)
 
-
 @app.get("/video", response_class=HTMLResponse)
 def video_page():
     return HTMLResponse(content=VIDEO_HTML)
-
 
 @app.post("/token")
 async def get_token(request: Request):
@@ -173,13 +169,12 @@ async def get_token(request: Request):
 
     return JSONResponse({"token": token, "url": livekit_url, "room": room_name})
 
-
 @app.get("/status")
 def bot_status():
     return JSONResponse({"running": True, "mode": "both"})
 
 
-# ── HTML pages ────────────────────────────────────────────────────────────────
+# ── Launcher HTML ─────────────────────────────────────────────────────────────
 
 LAUNCHER_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -244,207 +239,15 @@ LAUNCHER_HTML = """<!DOCTYPE html>
     <span class="card-icon">🎬</span>
     <div class="live-badge"><span class="live-dot"></span> Live</div>
     <div class="card-title">Video Avatar Bot</div>
-    <p class="card-desc">Talk to Dr. Alex's 3D avatar with lip-sync powered by SpatialReal.</p>
+    <p class="card-desc">Talk to Dr. Alex's live avatar powered by Tavus AI.</p>
     <div>
-      <span class="tag tag-purple">SpatialReal Avatar</span>
+      <span class="tag tag-purple">Tavus Avatar</span>
       <span class="tag tag-teal">Cartesia TTS</span>
       <span class="tag tag-purple">Groq LLM</span>
     </div>
     <span class="btn btn-video">Open Video Bot →</span>
   </a>
 </div>
-</body>
-</html>"""
-
-
-VIDEO_HTML = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dr. Alex - Video Avatar</title>
-<style>
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:'Segoe UI',sans-serif;background:#0f172a;color:#f1f5f9;
-    min-height:100vh;display:flex;flex-direction:column;align-items:center;
-    justify-content:center;padding:1rem;overflow:hidden}
-  #avatarVideo{position:fixed;top:0;left:0;width:100%;height:100%;
-    object-fit:cover;z-index:0;background:#0f172a;display:none}
-  .overlay{position:relative;z-index:10;width:100%;max-width:480px;
-    display:flex;flex-direction:column;align-items:center;gap:1rem}
-  h1{color:#a78bfa;font-size:1.8rem;font-weight:800;text-shadow:0 2px 20px rgba(0,0,0,.8)}
-  .avatar-placeholder{width:160px;height:160px;border-radius:50%;
-    background:linear-gradient(135deg,#7c3aed,#a78bfa);
-    display:flex;align-items:center;justify-content:center;font-size:4rem;
-    border:3px solid rgba(167,139,250,.4);box-shadow:0 0 40px rgba(139,92,246,.3);transition:all .3s}
-  .avatar-placeholder.speaking{box-shadow:0 0 60px rgba(139,92,246,.8);border-color:#a78bfa;
-    animation:avatarPulse 1s ease-in-out infinite}
-  @keyframes avatarPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}
-  .chatbox{width:100%;max-height:180px;overflow-y:auto;
-    background:rgba(15,23,42,.85);backdrop-filter:blur(10px);
-    border:1px solid rgba(51,65,85,.8);border-radius:12px;
-    padding:.8rem;display:flex;flex-direction:column;gap:.5rem}
-  .msg{padding:.5rem .9rem;border-radius:10px;max-width:85%;font-size:.85rem;line-height:1.4}
-  .bot-msg{background:rgba(51,65,85,.9);align-self:flex-start}
-  .user-msg{background:rgba(124,58,237,.8);align-self:flex-end}
-  .status{color:#94a3b8;font-size:.85rem;text-align:center;
-    background:rgba(15,23,42,.7);padding:.4rem 1rem;border-radius:99px;backdrop-filter:blur(10px)}
-  .status.listening{color:#22c55e}.status.speaking{color:#a78bfa}
-  .btn{width:100%;padding:.9rem;border:none;border-radius:12px;font-size:1rem;font-weight:700;cursor:pointer;transition:.2s}
-  .btn-start{background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:white}
-  .btn-start:hover{filter:brightness(1.1)}
-  .btn-stop{background:rgba(239,68,68,.8);color:white;display:none}
-  .btn:disabled{opacity:.5;cursor:not-allowed}
-  .unmute{display:none;background:#f59e0b;color:#000;padding:.6rem 1rem;
-    border-radius:10px;text-align:center;font-weight:700;cursor:pointer;font-size:.85rem;width:100%}
-  .back{color:#475569;font-size:.8rem;text-decoration:none;margin-top:.5rem}
-  .back:hover{color:#64748b}
-</style>
-<script src="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js"></script>
-</head>
-<body>
-<video id="avatarVideo" autoplay playsinline></video>
-<div class="overlay">
-  <h1>🎬 Dr. Alex</h1>
-  <div class="avatar-placeholder" id="avatarPlaceholder">🩺</div>
-  <div class="chatbox" id="chatbox">
-    <div class="msg bot-msg">Hello! I'm Dr. Alex. Click Start to begin.</div>
-  </div>
-  <div class="status" id="status">Ready</div>
-  <div class="unmute" id="unmute" onclick="unmuteAll()">🔇 Click to enable audio</div>
-  <button class="btn btn-start" id="startBtn" onclick="startConversation()">🎙️ Start Conversation</button>
-  <button class="btn btn-stop"  id="stopBtn"  onclick="stopConversation()">⏹ Disconnect</button>
-  <a class="back" href="/">← Back to launcher</a>
-</div>
-<script>
-let room=null,audioElements=[],audioCtx=null;
-const statusEl=document.getElementById('status');
-const startBtn=document.getElementById('startBtn');
-const stopBtn=document.getElementById('stopBtn');
-const placeholder=document.getElementById('avatarPlaceholder');
-const avatarVideo=document.getElementById('avatarVideo');
-const chatbox=document.getElementById('chatbox');
-const unmuteEl=document.getElementById('unmute');
-
-function setStatus(txt,cls){statusEl.textContent=txt;statusEl.className='status '+(cls||'');}
-function getOrUpdateMsg(id,text,isUser){
-  let el=document.getElementById('msg_'+id);
-  if(!el){el=document.createElement('div');el.id='msg_'+id;
-    el.className='msg '+(isUser?'user-msg':'bot-msg');chatbox.appendChild(el);}
-  el.textContent=text;chatbox.scrollTop=chatbox.scrollHeight;
-}
-function unmuteAll(){
-  if(audioCtx&&audioCtx.state==='suspended')audioCtx.resume();
-  audioElements.forEach(el=>{el.muted=false;el.volume=1.0;el.play().catch(()=>{});});
-  unmuteEl.style.display='none';
-}
-async function startConversation(){
-  startBtn.disabled=true;setStatus('Connecting...');
-  try{
-    audioCtx=new(window.AudioContext||window.webkitAudioContext)();
-    const roomName='video-room-'+Math.random().toString(36).substring(2,9);
-    const res=await fetch('/token',{method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({room:roomName,mode:'video',participant_name:'User'})});
-    const data=await res.json();
-    if(!data.token||!data.url)throw new Error('Token failed: '+JSON.stringify(data));
-    room=new LivekitClient.Room({
-      adaptiveStream: false,
-      dynacast: false,
-    });
-    room.on(LivekitClient.RoomEvent.TrackSubscribed,(track,pub,participant)=>{
-      console.log('TRACK SUBSCRIBED kind='+track.kind+' from='+participant.identity+' source='+pub.source);
-      if(track.kind===LivekitClient.Track.Kind.Audio){
-        const el=track.attach();
-        el.autoplay=true;el.muted=false;el.volume=1.0;
-        document.body.appendChild(el);audioElements.push(el);
-        el.play().catch(()=>{unmuteEl.style.display='block';});
-      }
-      if(track.kind===LivekitClient.Track.Kind.Video){
-        console.log('VIDEO TRACK! attaching...');
-        const el = track.attach();
-        el.autoplay=true;
-        el.playsInline=true;
-        el.muted=true;
-        el.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;object-fit:cover;z-index:1;background:#000';
-        document.body.appendChild(el);
-        placeholder.style.display='none';
-        el.play().catch(e=>console.warn('video play err:',e));
-      }
-    });
-    room.on(LivekitClient.RoomEvent.TrackPublished,(pub,participant)=>{
-      console.log('TRACK PUBLISHED kind='+pub.kind+' from='+participant.identity+' subscribed='+pub.isSubscribed);
-    });
-    room.on(LivekitClient.RoomEvent.ParticipantConnected,(p)=>{
-      console.log('Participant connected:',p.identity,'tracks:',p.trackPublications.size);
-      if(p.identity.startsWith('agent'))setStatus('🤖 Dr. Alex joined!','listening');
-      p.trackPublications.forEach((pub,sid)=>{
-        console.log('  existing track:',pub.kind,'subscribed:',pub.isSubscribed,'source:',pub.source);
-      });
-    });
-    room.on(LivekitClient.RoomEvent.TrackUnsubscribed,(track)=>{
-      track.detach();
-      if(track.kind===LivekitClient.Track.Kind.Video){
-        avatarVideo.style.display='none';placeholder.style.display='flex';}
-    });
-    room.on(LivekitClient.RoomEvent.ActiveSpeakersChanged,(speakers)=>{
-      const agentSpeaking=speakers.some(s=>s.identity.startsWith('agent'));
-      const userSpeaking=speakers.some(s=>s.identity==='User');
-      if(agentSpeaking){placeholder.classList.add('speaking');setStatus('🔊 Dr. Alex is speaking...','speaking');}
-      else if(userSpeaking){placeholder.classList.remove('speaking');setStatus('🎤 Listening...','listening');}
-      else{placeholder.classList.remove('speaking');setStatus('💬 Speak to Dr. Alex...');}
-    });
-    room.on(LivekitClient.RoomEvent.TranscriptionReceived,(segments,participant)=>{
-      // participant null = local user's own speech
-      // participant with 'agent' identity = bot
-      const isAgent=participant!=null&&participant.identity.startsWith('agent');
-      for(const seg of segments){
-        if(seg.text&&seg.text.trim())getOrUpdateMsg(seg.id,seg.text,!isAgent);
-      }
-    });
-    room.on(LivekitClient.RoomEvent.Disconnected,()=>{setStatus('Disconnected');resetUI();});
-    await room.connect(data.url,data.token);
-    // Check already-connected participants for existing video tracks
-    room.remoteParticipants.forEach((p)=>{
-      console.log('Already connected:',p.identity);
-      p.trackPublications.forEach((pub)=>{
-        console.log('  track:',pub.kind,'subscribed:',pub.isSubscribed);
-        if(pub.isSubscribed && pub.track){
-          if(pub.track.kind===LivekitClient.Track.Kind.Video){
-            console.log('Attaching existing video track from',p.identity);
-            pub.track.attach(avatarVideo);
-            avatarVideo.muted=true;
-            avatarVideo.style.display='block';
-            placeholder.style.display='none';
-            avatarVideo.play().catch(e=>console.warn('Video play:',e));
-          }
-          if(pub.track.kind===LivekitClient.Track.Kind.Audio){
-            const el=pub.track.attach();
-            el.autoplay=true;el.muted=false;el.volume=1.0;
-            document.body.appendChild(el);audioElements.push(el);
-            el.play().catch(()=>{unmuteEl.style.display='block';});
-          }
-        }
-      });
-    });
-    await room.localParticipant.setMicrophoneEnabled(true);
-    setStatus('⏳ Waiting for Dr. Alex...');
-    startBtn.style.display='none';stopBtn.style.display='block';
-  }catch(e){console.error(e);setStatus('❌ '+e.message);startBtn.disabled=false;}
-}
-async function stopConversation(){
-  if(room){await room.disconnect();room=null;}
-  audioElements.forEach(el=>{el.pause();el.remove();});audioElements=[];
-  if(audioCtx){audioCtx.close();audioCtx=null;}
-  resetUI();
-}
-function resetUI(){
-  startBtn.style.display='block';startBtn.disabled=false;
-  stopBtn.style.display='none';avatarVideo.style.display='none';
-  placeholder.style.display='flex';placeholder.classList.remove('speaking');
-  unmuteEl.style.display='none';setStatus('Ready');
-}
-</script>
 </body>
 </html>"""
 
