@@ -224,7 +224,7 @@
       try {
         // 1. Get token from launcher
         const roomName = 'audio-room-' + Math.random().toString(36).substring(2, 9);
-        const res = await fetch('http://localhost:8080/token', {
+        const res = await fetch('/token', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ room: roomName, mode: 'audio', participant_name: 'User' })
