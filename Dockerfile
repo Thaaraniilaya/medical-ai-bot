@@ -15,6 +15,7 @@ COPY launcher.py .
 COPY bot_audio_livekit_fixed.py .
 COPY bot_spatial.py .
 COPY audio_ui.html .
+COPY video_ui.html .
 
 EXPOSE 8080
 
