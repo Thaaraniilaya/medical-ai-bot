@@ -313,9 +313,13 @@
 
         // 6. Transcriptions
         room.on(LivekitClient.RoomEvent.TranscriptionReceived, (segments, participant) => {
-          const isAgent = participant && participant.identity.startsWith('agent');
+          // participant null = local user's own transcription
+          // participant with 'agent' identity = bot
+          const isAgent = participant != null && participant.identity.startsWith('agent');
           for (const seg of segments) {
-            getOrUpdateMsg(seg.id, seg.text, !isAgent);
+            if (seg.text && seg.text.trim()) {
+              getOrUpdateMsg(seg.id, seg.text, !isAgent);
+            }
           }
         });
 

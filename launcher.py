@@ -28,11 +28,19 @@ AUDIO_HTML = (BOT_DIR / "audio_ui.html").read_text(encoding="utf-8")
 
 # ── Agent definitions ─────────────────────────────────────────────────────────
 
-AUDIO_PROMPT = """You are Dr. Alex, a warm professional AI medical assistant.
-Keep responses SHORT (under 15 words). Be friendly and helpful."""
+AUDIO_PROMPT = """You are Dr. Alex, a professional AI medical assistant speaking via voice.
+STRICT RULES:
+- Keep responses SHORT (under 15 words)
+- NEVER use asterisks or action text like *smile* or *leaning*
+- Speak naturally and directly, no roleplay actions
+- Be warm and helpful"""
 
-VIDEO_PROMPT = """You are Dr. Alex, a warm professional AI medical assistant with a 3D avatar.
-Keep responses EXTREMELY SHORT (under 10 words). Speak naturally."""
+VIDEO_PROMPT = """You are Dr. Alex, a professional AI medical assistant with a 3D avatar.
+STRICT RULES:
+- Keep responses EXTREMELY SHORT (under 10 words)
+- NEVER use asterisks or action text like *smile* or *nods*
+- Speak naturally and directly, no roleplay actions
+- Be warm and professional"""
 
 
 class AudioAgent(Agent):
@@ -387,8 +395,12 @@ async function startConversation(){
       else{placeholder.classList.remove('speaking');setStatus('💬 Speak to Dr. Alex...');}
     });
     room.on(LivekitClient.RoomEvent.TranscriptionReceived,(segments,participant)=>{
-      const isAgent=participant&&participant.identity.startsWith('agent');
-      for(const seg of segments)getOrUpdateMsg(seg.id,seg.text,!isAgent);
+      // participant null = local user's own speech
+      // participant with 'agent' identity = bot
+      const isAgent=participant!=null&&participant.identity.startsWith('agent');
+      for(const seg of segments){
+        if(seg.text&&seg.text.trim())getOrUpdateMsg(seg.id,seg.text,!isAgent);
+      }
     });
     room.on(LivekitClient.RoomEvent.Disconnected,()=>{setStatus('Disconnected');resetUI();});
     await room.connect(data.url,data.token);
