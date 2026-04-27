@@ -8,3 +8,4 @@ livekit-plugins-deepgram==1.5.6
 livekit-plugins-silero==1.5.6
 livekit-plugins-openai==1.5.6
 livekit-plugins-spatialreal==1.4.5
+livekit-plugins-tavus==1.5.6
